@@ -4,6 +4,11 @@
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
 	<title>splix∞</title>
+	<meta name="description" content="splix∞ — a freeform territory-claiming io game. Glide out, draw a loop, and the land inside is yours." />
+	<meta name="theme-color" content="#0A0E14" />
+	<meta property="og:title" content="splix∞" />
+	<meta property="og:description" content="Glide out, draw a loop, and the land inside is yours. Stray too far and you run blind." />
+	<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230A0E14'/><circle cx='16' cy='16' r='7.5' fill='none' stroke='%23F2B45C' stroke-width='2.5'/><circle cx='23.5' cy='16' r='2.6' fill='%23F2B45C'/></svg>" />
 	<link rel="preconnect" href="https://fonts.googleapis.com" />
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 	<link
@@ -100,16 +105,46 @@
 		.stat-num { font-family: var(--display); font-weight: 700; font-size: clamp(40px, 7vw, 80px); line-height: 1; color: var(--signal); letter-spacing: -0.03em; margin-bottom: 34px; }
 		.hidden { display: none !important; }
 
+		/* juice: overlay entrance, death flash, kill/info toasts */
+		@keyframes overlayIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+		.overlay:not(.hidden) { animation: overlayIn 0.45s cubic-bezier(.2,.7,.2,1); }
+		#flash { position: fixed; inset: 0; z-index: 5; pointer-events: none; opacity: 0; background: #E8718E; }
+		#flash.on { animation: flashfade 0.55s ease-out; }
+		@keyframes flashfade { 0% { opacity: 0.45; } 100% { opacity: 0; } }
+		#toasts { position: fixed; top: 78px; left: 0; right: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+		.toast { font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: #1A1206; background: var(--signal); padding: 7px 16px; animation: toastIn 2.2s ease forwards; }
+		@keyframes toastIn { 0% { opacity: 0; transform: translateY(-8px); } 10% { opacity: 1; transform: none; } 78% { opacity: 1; } 100% { opacity: 0; transform: translateY(-4px); } }
+		#mute { position: fixed; bottom: 16px; left: 18px; z-index: 4; font-family: var(--mono); font-size: 10px; letter-spacing: 0.18em; color: var(--faint); }
+
 		@media (prefers-reduced-motion: reduce) {
-			#live .dot { animation: none; }
+			#live .dot, .overlay:not(.hidden), #flash.on, .toast { animation: none; }
 			.cta { transition: none; }
+			#flash.on { opacity: 0; }
+		}
+
+		/* compact layout for phones */
+		@media (max-width: 640px) {
+			.frame { inset: 8px; }
+			#hud { top: 22px; left: 18px; }
+			#hud .area { font-size: 30px; }
+			#live { top: 22px; right: 18px; }
+			#lb { display: none; }
+			#mini-wrap { right: 12px; bottom: 12px; }
+			#mini { width: 104px; height: 104px; }
+			#mute { display: none; }
+			.overlay { padding: 0 26px; }
+			.row { flex-direction: column; max-width: 360px; }
+			.cta { width: 100%; }
 		}
 	</style>
 </head>
 <body>
 	<canvas id="c"></canvas>
 	<div class="vignette"></div>
+	<div id="flash"></div>
 	<div class="frame"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+	<div id="toasts"></div>
+	<div id="mute" class="panel hidden">M · sound on</div>
 
 	<div id="hud" class="panel hidden"></div>
 	<div id="live" class="panel hidden"><span class="dot"></span>LIVE</div>
@@ -179,11 +214,44 @@
 	var myScore = 0, myRank = 0, mapSize = 600, leaderboard = [];
 	var TILE_PX = 11, targetPx = 11;
 	var minimapGrid = new Uint8Array(80 * 80);
+	var SPAWN_PROTECT_MS = 2500; // matches server SPAWN_PROTECTION_MS
+	var captureFlash = 0, myKills = 0, spawnTime = 0, muted = false;
+	var flashEl = document.getElementById("flash"), toastsEl = document.getElementById("toasts"), muteEl = document.getElementById("mute");
 
 	function reset() {
 		players = {}; territories = {}; names = {}; myScore = 0; myRank = 0; leaderboard = [];
 		TILE_PX = targetPx = 11; minimapGrid = new Uint8Array(80 * 80);
+		captureFlash = 0; myKills = 0;
 	}
+
+	// ---- audio: subtle Web Audio cues, context created on the first user gesture (Play) ----
+	var actx = null;
+	function audioInit() { if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_e) {} } }
+	function blip(freq, dur, type, gain, slideTo) {
+		if (muted || !actx) return;
+		var o = actx.createOscillator(), g = actx.createGain();
+		o.type = type || "sine"; o.frequency.value = freq;
+		if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, actx.currentTime + dur);
+		g.gain.value = gain || 0.05;
+		g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur);
+		o.connect(g); g.connect(actx.destination);
+		o.start(); o.stop(actx.currentTime + dur);
+	}
+	function sndCapture() { blip(520, 0.16, "triangle", 0.05, 860); }
+	function sndKill() { blip(660, 0.1, "square", 0.045); setTimeout(function () { blip(990, 0.1, "square", 0.045); }, 85); }
+	function sndDeath() { blip(420, 0.5, "sawtooth", 0.06, 120); }
+
+	function toast(text) {
+		var el = document.createElement("div");
+		el.className = "toast"; el.textContent = text;
+		toastsEl.appendChild(el);
+		setTimeout(function () { el.remove(); }, 2300);
+	}
+	function deathFlash() { flashEl.classList.remove("on"); void flashEl.offsetWidth; flashEl.classList.add("on"); }
+
+	addEventListener("keydown", function (e) {
+		if (e.key === "m" || e.key === "M") { muted = !muted; muteEl.textContent = muted ? "M · sound off" : "M · sound on"; }
+	});
 	function getPlayer(id) {
 		if (!players[id]) players[id] = { pos: null, target: null, heading: 0, t: 0, colorId: id, dead: false, trail: [] };
 		return players[id];
@@ -225,9 +293,10 @@
 			}
 			ws.send(new Uint8Array([R.READY]).buffer);
 			screenState = "playing";
+			spawnTime = performance.now();
 			startEl.classList.add("hidden"); deadEl.classList.add("hidden");
 			hud.classList.remove("hidden"); lb.classList.remove("hidden");
-			miniWrap.classList.remove("hidden"); liveEl.classList.remove("hidden");
+			miniWrap.classList.remove("hidden"); liveEl.classList.remove("hidden"); muteEl.classList.remove("hidden");
 		});
 		ws.addEventListener("message", function (e) { if (e.data instanceof ArrayBuffer) onMessage(new DataView(e.data)); });
 		ws.addEventListener("close", function () { if (screenState === "playing") die(); });
@@ -236,9 +305,11 @@
 
 	function die() {
 		screenState = "dead";
+		deathFlash(); sndDeath();
 		document.getElementById("deadscore").textContent = myScore;
 		deadEl.classList.remove("hidden");
-		hud.classList.add("hidden"); lb.classList.add("hidden"); miniWrap.classList.add("hidden"); liveEl.classList.add("hidden");
+		hud.classList.add("hidden"); lb.classList.add("hidden"); miniWrap.classList.add("hidden");
+		liveEl.classList.add("hidden"); muteEl.classList.add("hidden");
 		if (ws) { try { ws.close(); } catch (_e) {} }
 	}
 
@@ -263,7 +334,11 @@
 		} else if (type === S.PLAYER_NAME) {
 			names[view.getUint16(1, false)] = new TextDecoder().decode(new Uint8Array(view.buffer, 3));
 		} else if (type === S.MY_SCORE) {
-			myScore = view.getUint32(1, false);
+			var newScore = view.getUint32(1, false);
+			var newKills = view.getUint16(5, false);
+			if (myScore > 0 && newScore > myScore) { captureFlash = performance.now(); sndCapture(); }
+			if (newKills > myKills) { toast("Rival eliminated"); sndKill(); }
+			myScore = newScore; myKills = newKills;
 		} else if (type === S.MY_RANK) {
 			myRank = view.getUint16(1, false);
 		} else if (type === S.LEADERBOARD) {
@@ -343,6 +418,7 @@
 	}
 
 	function draw() {
+		var now = performance.now();
 		ctx.fillStyle = "#0A0E14"; ctx.fillRect(0, 0, canvas.width, canvas.height);
 		var me = players[0], camX = me && me.pos ? me.pos.x : mapSize / 2, camY = me && me.pos ? me.pos.y : mapSize / 2;
 		var cx = canvas.width / 2, cy = canvas.height / 2;
@@ -377,8 +453,12 @@
 				for (var k = 1; k < ring.length; k++) ctx.lineTo(sx(ring[k][0]), sy(ring[k][1]));
 				ctx.closePath();
 			}
-			ctx.fillStyle = col; ctx.globalAlpha = 0.5; ctx.fill("evenodd"); ctx.globalAlpha = 1;
-			ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.stroke();
+			var pulse = (id === "0") ? Math.max(0, 1 - (now - captureFlash) / 350) : 0;
+			ctx.fillStyle = col; ctx.globalAlpha = 0.5 + pulse * 0.35; ctx.fill("evenodd"); ctx.globalAlpha = 1;
+			ctx.lineWidth = 2 + pulse * 2; ctx.strokeStyle = pulse > 0 ? "#F2B45C" : col;
+			if (pulse > 0) { ctx.shadowColor = "#F2B45C"; ctx.shadowBlur = 16 * pulse; }
+			ctx.stroke();
+			ctx.shadowBlur = 0;
 		}
 		// trails
 		for (var id2 in players) {
@@ -450,6 +530,18 @@
 		ctx.shadowBlur = 7;
 		ctx.fillStyle = tick;
 		ctx.fill();
+		ctx.shadowBlur = 0;
+		// spawn-protection shield (own player only, fades over the protection window)
+		if (isMe) {
+			var pt = performance.now() - spawnTime;
+			if (pt >= 0 && pt < SPAWN_PROTECT_MS) {
+				ctx.beginPath();
+				ctx.arc(0, 0, r + 5, 0, TAU);
+				ctx.strokeStyle = "rgba(242,180,92," + (0.45 * (1 - pt / SPAWN_PROTECT_MS)).toFixed(3) + ")";
+				ctx.lineWidth = 2;
+				ctx.stroke();
+			}
+		}
 		ctx.restore();
 	}
 
@@ -486,10 +578,10 @@
 	}
 
 	// ------------------------------------------------------------------ start
-	function startGame() { starterr.textContent = ""; connect(nameEl.value.trim()); }
+	function startGame() { audioInit(); starterr.textContent = ""; connect(nameEl.value.trim()); }
 	document.getElementById("play").addEventListener("click", startGame);
 	nameEl.addEventListener("keydown", function (e) { if (e.key === "Enter") startGame(); });
-	document.getElementById("again").addEventListener("click", function () { connect(nameEl.value.trim()); });
+	document.getElementById("again").addEventListener("click", function () { audioInit(); connect(nameEl.value.trim()); });
 	nameEl.focus();
 	requestAnimationFrame(frame);
 	</script>
