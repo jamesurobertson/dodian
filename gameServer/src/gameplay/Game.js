@@ -12,6 +12,7 @@ import {
 	MINIMAP_PART_UPDATE_FREQUENCY,
 	PLAYER_SPAWN_RADIUS,
 	REQUIRED_PLAYER_COUNT_FOR_GLOBAL_LEADERBOARD,
+	SPAWN_CANDIDATE_COUNT,
 	TRAIL_HASH_CELL_SIZE,
 } from "../config.js";
 import { ApplicationLoop } from "../ApplicationLoop.js";
@@ -177,8 +178,11 @@ export class Game {
 				}
 				if (segmentsIntersect(head.ax, head.ay, head.bx, head.by, seg.ax, seg.ay, seg.bx, seg.by)) {
 					if (seg.player == mover) {
+						if (mover.isSpawnProtected) continue; // immune just after spawning
 						mover.killBySelfTrail();
 					} else {
+						// A protected victim can't be cut, and a protected mover can't cut others.
+						if (seg.player.isSpawnProtected || mover.isSpawnProtected) continue;
 						mover.killByTrailCut(seg.player);
 					}
 					break;
@@ -226,7 +230,7 @@ export class Game {
 	 * @returns {{position: Vec2, heading: number}}
 	 */
 	getNewSpawnPosition() {
-		const position = (() => {
+		const randomCandidate = () => {
 			let tempX = Math.floor(
 				lerp(PLAYER_SPAWN_RADIUS + 1, this.arena.width - PLAYER_SPAWN_RADIUS - 1, Math.random()),
 			);
@@ -234,8 +238,7 @@ export class Game {
 				lerp(PLAYER_SPAWN_RADIUS + 1, this.arena.height - PLAYER_SPAWN_RADIUS - 1, Math.random()),
 			);
 
-			// We should prevent players from spawning directly inside of the pit or on the border of it.
-			// If x is within pit's range we then check y, while y is within pit's range we generate new y (optimize later).
+			// Keep players from spawning inside (or on the border of) the pit in arena mode.
 			if (
 				this.#gameMode == "arena" &&
 				tempX >= this.arena.width / 2 - this.arena.pitWidth / 2 - 2 &&
@@ -250,21 +253,33 @@ export class Game {
 					);
 				}
 			}
-			return new Vec2(
-				tempX,
-				tempY,
-			);
-		})();
+			return new Vec2(tempX, tempY);
+		};
+
+		// Sample several candidates and keep the one farthest from any existing player, so a new
+		// player doesn't spawn right on top of (or inside the territory of) someone they can't see.
+		let position = randomCandidate();
+		let bestDist = -1;
+		for (let i = 0; i < SPAWN_CANDIDATE_COUNT; i++) {
+			const candidate = randomCandidate();
+			let minDist = Infinity;
+			for (const player of this.#players.values()) {
+				if (player.isSpectator || player.permanentlyDead) continue;
+				minDist = Math.min(minDist, candidate.distanceTo(player.getPosition()));
+			}
+			if (minDist > bestDist) {
+				bestDist = minDist;
+				position = candidate;
+			}
+		}
+
 		// Point the initial heading from the spawn towards the arena centre, so players always
 		// start by moving inward rather than straight into a wall.
 		const heading = Math.atan2(
 			this.arena.height / 2 - position.y,
 			this.arena.width / 2 - position.x,
 		);
-		return {
-			position,
-			heading,
-		};
+		return { position, heading };
 	}
 
 	/**

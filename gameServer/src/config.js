@@ -32,6 +32,18 @@ export const UPDATES_VIEWPORT_RECT_SIZE = MIN_TILES_VIEWPORT_RECT_SIZE + VIEWPOR
 export const PLAYER_SPAWN_RADIUS = 2;
 
 /**
+ * How long (ms) a freshly spawned player is protected: they cannot be killed and cannot cut
+ * others. Prevents dying instantly to an enemy you couldn't see at spawn (vision is limited).
+ */
+export const SPAWN_PROTECTION_MS = 2500;
+
+/**
+ * How many random candidate positions to consider when spawning; the one farthest from existing
+ * players is chosen so you don't spawn right on top of someone.
+ */
+export const SPAWN_CANDIDATE_COUNT = 24;
+
+/**
  * How many tiles players move per millisecond. This should be the same value as on the client.
  */
 export const PLAYER_TRAVEL_SPEED = 0.006;

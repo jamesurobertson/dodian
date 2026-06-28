@@ -8,6 +8,7 @@ import {
 	PAID_SKIN_PATTERN_IDS,
 	PLAYER_TRAVEL_SPEED,
 	PLAYER_TURN_RATE,
+	SPAWN_PROTECTION_MS,
 	SPAWN_TERRITORY_HALF_TILES,
 	UPDATES_VIEWPORT_RECT_SIZE,
 	VIEWPORT_EDGE_CHUNK_SIZE,
@@ -172,6 +173,11 @@ export class Player {
 	#isSpectator = false;
 	get isSpectator() {
 		return this.#isSpectator;
+	}
+
+	/** Newly spawned players are briefly immune to death and cannot cut others. */
+	get isSpawnProtected() {
+		return performance.now() < this.#joinTime + SPAWN_PROTECTION_MS;
 	}
 
 	/**
