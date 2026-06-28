@@ -89,6 +89,17 @@ export class Player {
 	/** Length of the trail the last time it was broadcast; used to send one final clear. */
 	#prevTrailLen = 0;
 
+	/**
+	 * The segment the head travelled this tick (prev -> current position). This is the probe used
+	 * for cutting other players' trails, so a player can kill an intruder even while standing in
+	 * their own territory (where they have no trail of their own).
+	 */
+	#moveSegAx = 0;
+	#moveSegAy = 0;
+	#moveSegBx = 0;
+	#moveSegBy = 0;
+	#hasMoved = false;
+
 	#capturedTileCount = 0;
 	#maxCapturedTileCount = 0;
 	#killCount = 0;
@@ -473,15 +484,13 @@ export class Player {
 	}
 
 	/**
-	 * Returns the most recent trail segment (the head), or null if the trail is too short.
+	 * The segment the head travelled this tick — the probe used to cut trails. Available whether or
+	 * not the player has a trail, so a player standing in their own territory can still cut intruders.
 	 * @returns {{ax: number, ay: number, bx: number, by: number} | null}
 	 */
-	getFreeformHeadSegment() {
-		const n = this.#freeformTrail.length;
-		if (n < 2) return null;
-		const a = this.#freeformTrail[n - 2];
-		const b = this.#freeformTrail[n - 1];
-		return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+	getMovementSegment() {
+		if (!this.#hasMoved) return null;
+		return { ax: this.#moveSegAx, ay: this.#moveSegAy, bx: this.#moveSegBx, by: this.#moveSegBy };
 	}
 
 	/**
@@ -538,6 +547,11 @@ export class Player {
 			const m = 0.5;
 			this.#currentPosition.x = Math.max(m, Math.min(this.game.arenaWidth - 1 - m, this.#currentPosition.x));
 			this.#currentPosition.y = Math.max(m, Math.min(this.game.arenaHeight - 1 - m, this.#currentPosition.y));
+			this.#moveSegAx = prevX;
+			this.#moveSegAy = prevY;
+			this.#moveSegBx = this.#currentPosition.x;
+			this.#moveSegBy = this.#currentPosition.y;
+			this.#hasMoved = true;
 			this.#updateFreeformTrail(prevX, prevY);
 
 			try {

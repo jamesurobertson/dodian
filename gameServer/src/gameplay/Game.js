@@ -191,7 +191,7 @@ export class Game {
 		}
 		for (const mover of this.#players.values()) {
 			if (mover.dead || mover.isSpectator) continue;
-			const head = mover.getFreeformHeadSegment();
+			const head = mover.getMovementSegment();
 			if (!head) continue;
 			const ownLen = mover.freeformTrailLength;
 			const candidates = hash.querySegment(head.ax, head.ay, head.bx, head.by);
