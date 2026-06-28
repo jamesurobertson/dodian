@@ -243,9 +243,6 @@ export class WebSocketConnection {
 			// This means that if our own color changes, there's a chance that the color of other players changed as well.
 			// So we need to resend the player colors of all other players as well.
 			this.#player.updateNearbyPlayerSkinColors();
-
-			this.#player.sendCurrentViewportChunk();
-			this.#player.fireAllMyTileUpdates();
 		}
 	}
 
@@ -305,9 +302,8 @@ export class WebSocketConnection {
 				name: this.#receivedName,
 				isSpectator: this.#receivedSpectatorMode,
 			});
-			this.#player.sendCurrentViewportChunk();
 			// Clients only really expect a single number, so we'll just take the maximum size of the map.
-			const mapSize = Math.max(this.#game.arena.width, this.#game.arena.height);
+			const mapSize = Math.max(this.#game.arenaWidth, this.#game.arenaHeight);
 			this.#sendMapSize(mapSize);
 			for (const message of this.#game.getMinimapMessages()) {
 				this.send(message);
@@ -317,7 +313,6 @@ export class WebSocketConnection {
 				this.send(leaderboard);
 			}
 			this.#sendReady();
-			this.#sendLegacyReady();
 		} else if (messageType == WebSocketConnection.ReceiveAction.PING) {
 			this.#lastPingTime = performance.now();
 			this.#sendPong();
@@ -327,10 +322,6 @@ export class WebSocketConnection {
 			const rawHeading = view.getUint16(1, false);
 			const heading = (rawHeading / 65536) * TAU;
 			this.#player.clientHeadingUpdateRequested(heading);
-		} else if (messageType == WebSocketConnection.ReceiveAction.REQUEST_MY_TRAIL) {
-			if (!this.#player) return;
-			const message = WebSocketConnection.createTrailMessage(0, Array.from(this.#player.getTrailVertices()));
-			this.send(message);
 		} else if (messageType == WebSocketConnection.ReceiveAction.SKIN) {
 			if (this.#player) return;
 			if (view.byteLength != 3) return;
@@ -387,39 +378,6 @@ export class WebSocketConnection {
 
 	#sendReady() {
 		this.send(new Uint8Array([WebSocketConnection.SendAction.READY]));
-	}
-
-	/**
-	 * The mobile client expects at least one `CHUNK_OF_BLOCKS` message before it starts
-	 * rendering player movement.
-	 * This sends an empty chunk of width = 0 and height = 0, causing no blocks to be added
-	 * to the client while still enabling player movement.
-	 */
-	#sendLegacyReady() {
-		const buffer = new ArrayBuffer(10);
-		const view = new DataView(buffer);
-		let cursor = 0;
-
-		view.setUint8(cursor, WebSocketConnection.SendAction.CHUNK_OF_BLOCKS);
-		cursor++;
-
-		// x
-		view.setUint16(cursor, 0, false);
-		cursor += 2;
-
-		// y
-		view.setUint16(cursor, 0, false);
-		cursor += 2;
-
-		// w
-		view.setUint16(cursor, 0, false);
-		cursor += 2;
-
-		// h
-		view.setUint16(cursor, 0, false);
-		cursor += 2;
-
-		this.send(buffer);
 	}
 
 	#sendPong() {
@@ -544,68 +502,6 @@ export class WebSocketConnection {
 	}
 
 	/**
-	 * @param {import("./util/util.js").Rect} rect
-	 * @param {number} tileType
-	 * @param {number} patternId
-	 * @param {boolean} isEdgeChunk
-	 */
-	sendFillRect(rect, tileType, patternId, isEdgeChunk = false) {
-		const buffer = new ArrayBuffer(12);
-		const view = new DataView(buffer);
-		let cursor = 0;
-
-		view.setUint8(cursor, WebSocketConnection.SendAction.FILL_RECT);
-		cursor++;
-
-		view.setUint16(cursor, rect.min.x, false);
-		cursor += 2;
-
-		view.setUint16(cursor, rect.min.y, false);
-		cursor += 2;
-
-		const width = rect.max.x - rect.min.x;
-		view.setUint16(cursor, width, false);
-		cursor += 2;
-
-		const height = rect.max.y - rect.min.y;
-		view.setUint16(cursor, height, false);
-		cursor += 2;
-
-		view.setUint8(cursor, tileType);
-		cursor++;
-
-		view.setUint8(cursor, patternId);
-		cursor++;
-
-		view.setUint8(cursor, isEdgeChunk ? 1 : 0);
-		cursor++;
-
-		this.send(buffer);
-	}
-
-	/**
-	 * @param {number} playerId
-	 * @param {Vec2[]} vertices
-	 */
-	static createTrailMessage(playerId, vertices) {
-		const bufferLength = 3 + vertices.length * 4;
-		const buffer = new ArrayBuffer(bufferLength);
-		const view = new DataView(buffer);
-		let cursor = 0;
-		view.setUint8(cursor, WebSocketConnection.SendAction.SET_PLAYER_TRAIL);
-		cursor++;
-		view.setUint16(cursor, playerId, false);
-		cursor += 2;
-		for (const vertex of vertices) {
-			view.setUint16(cursor, vertex.x, false);
-			cursor += 2;
-			view.setUint16(cursor, vertex.y, false);
-			cursor += 2;
-		}
-		return buffer;
-	}
-
-	/**
 	 * Encodes a player's polygon territory. All rings (outer rings and holes) are sent flat; the
 	 * client fills them with the even-odd rule so holes render correctly regardless of winding.
 	 * Territory is stored in sub-units (tile * TERRITORY_SUBUNIT_SCALE = 1024); coordinates are
@@ -651,29 +547,6 @@ export class WebSocketConnection {
 
 	/**
 	 * @param {number} playerId
-	 * @param {Vec2} vertex The final vertex of the trail.
-	 */
-	static createEmptyTrailMessage(playerId, vertex) {
-		const buffer = new ArrayBuffer(7);
-		const view = new DataView(buffer);
-		let cursor = 0;
-
-		view.setUint8(cursor, WebSocketConnection.SendAction.EMPTY_TRAIL_WITH_LAST_POS);
-		cursor++;
-
-		view.setUint16(cursor, playerId, false);
-		cursor += 2;
-
-		view.setUint16(cursor, vertex.x, false);
-		cursor += 2;
-		view.setUint16(cursor, vertex.y, false);
-		cursor += 2;
-
-		return buffer;
-	}
-
-	/**
-	 * @param {number} playerId
 	 * @param {Vec2?} position The position where the player died. This is only useful when the player
 	 * died while hitting a wall or their own trail. In that case we want to make it clearly visible that this is
 	 * what caused the player to die. But when the player is killed by another player, the position
@@ -694,23 +567,6 @@ export class WebSocketConnection {
 			view.setUint16(cursor, position.y, false);
 			cursor += 2;
 		}
-		return buffer;
-	}
-
-	/**
-	 * @param {number} playerId
-	 */
-	static createPlayerUndoDieMessage(playerId) {
-		const buffer = new ArrayBuffer(3);
-		const view = new DataView(buffer);
-		let cursor = 0;
-
-		view.setUint8(cursor, WebSocketConnection.SendAction.UNDO_PLAYER_DIE);
-		cursor++;
-
-		view.setUint16(cursor, playerId, false);
-		cursor += 2;
-
 		return buffer;
 	}
 

@@ -1,7 +1,6 @@
 /** @typedef {"default" | "drawing" | "arena"} GameModes */
 
 import { lerp, SingleInstancePromise, Vec2 } from "renda";
-import { Arena } from "./Arena.js";
 import { Player } from "./Player.js";
 import { Territory } from "./Territory.js";
 import { WebSocketConnection } from "../WebSocketConnection.js";
@@ -31,10 +30,36 @@ export const validGamemodes = ["default", "drawing", "arena"];
 export class Game {
 	#mainInstance;
 
-	#arena;
 	#gameMode;
 	get gameMode() {
 		return this.#gameMode;
+	}
+
+	#arenaWidth = 0;
+	#arenaHeight = 0;
+	#pitWidth = 0;
+	#pitHeight = 0;
+
+	get arenaWidth() {
+		return this.#arenaWidth;
+	}
+
+	get arenaHeight() {
+		return this.#arenaHeight;
+	}
+
+	/**
+	 * Whether a point lies inside the central pit (arena game mode only).
+	 * @param {number} x
+	 * @param {number} y
+	 */
+	isInsidePit(x, y) {
+		if (this.#pitWidth <= 0 || this.#pitHeight <= 0) return false;
+		const left = this.#arenaWidth / 2 - this.#pitWidth / 2;
+		const right = this.#arenaWidth / 2 + this.#pitWidth / 2;
+		const top = this.#arenaHeight / 2 - this.#pitHeight / 2;
+		const bottom = this.#arenaHeight / 2 + this.#pitHeight / 2;
+		return x >= left && x < right && y >= top && y < bottom;
 	}
 
 	/** Broad-phase acceleration structure for continuous trail collision (rebuilt each tick). */
@@ -53,10 +78,6 @@ export class Game {
 	 */
 	getPlayerById(id) {
 		return this.#players.get(id);
-	}
-
-	get arena() {
-		return this.#arena;
 	}
 
 	/** @type {ArrayBuffer[]} */
@@ -91,13 +112,10 @@ export class Game {
 	} = {}) {
 		this.#mainInstance = mainInstance;
 		this.#gameMode = gameMode;
-		this.#arena = new Arena(arenaWidth, arenaHeight, pitWidth, pitHeight, gameMode);
-		this.#arena.onRectFilled((rect, tileValue) => {
-			for (const player of this.getOverlappingViewportPlayersForRect(rect)) {
-				const { colorId, patternId } = this.getTileTypeForMessage(player, tileValue);
-				player.connection.sendFillRect(rect, colorId, patternId);
-			}
-		});
+		this.#arenaWidth = arenaWidth;
+		this.#arenaHeight = arenaHeight;
+		this.#pitWidth = pitWidth;
+		this.#pitHeight = pitHeight;
 
 		// When a capture's worker result arrives, apply the new area + broadcast territory for every
 		// affected player, and let the capturing player resume its trail lifecycle.
@@ -117,7 +135,6 @@ export class Game {
 
 		applicationLoop.onSlowTickEnded(() => {
 			for (const player of this.#players.values()) {
-				this.broadcastPlayerTrail(player);
 				this.broadcastPlayerState(player);
 				player.sendPlayerStateToPlayer(player);
 			}
@@ -232,24 +249,24 @@ export class Game {
 	getNewSpawnPosition() {
 		const randomCandidate = () => {
 			let tempX = Math.floor(
-				lerp(PLAYER_SPAWN_RADIUS + 1, this.arena.width - PLAYER_SPAWN_RADIUS - 1, Math.random()),
+				lerp(PLAYER_SPAWN_RADIUS + 1, this.#arenaWidth - PLAYER_SPAWN_RADIUS - 1, Math.random()),
 			);
 			let tempY = Math.floor(
-				lerp(PLAYER_SPAWN_RADIUS + 1, this.arena.height - PLAYER_SPAWN_RADIUS - 1, Math.random()),
+				lerp(PLAYER_SPAWN_RADIUS + 1, this.#arenaHeight - PLAYER_SPAWN_RADIUS - 1, Math.random()),
 			);
 
 			// Keep players from spawning inside (or on the border of) the pit in arena mode.
 			if (
 				this.#gameMode == "arena" &&
-				tempX >= this.arena.width / 2 - this.arena.pitWidth / 2 - 2 &&
-				tempX <= this.arena.width / 2 + this.arena.pitWidth / 2 + 1
+				tempX >= this.#arenaWidth / 2 - this.#pitWidth / 2 - 2 &&
+				tempX <= this.#arenaWidth / 2 + this.#pitWidth / 2 + 1
 			) {
 				while (
-					tempY >= this.arena.height / 2 - this.arena.pitHeight / 2 - 2 &&
-					tempY <= this.arena.height / 2 + this.arena.pitHeight / 2 + 1
+					tempY >= this.#arenaHeight / 2 - this.#pitHeight / 2 - 2 &&
+					tempY <= this.#arenaHeight / 2 + this.#pitHeight / 2 + 1
 				) {
 					tempY = Math.floor(
-						lerp(PLAYER_SPAWN_RADIUS + 1, this.arena.height - PLAYER_SPAWN_RADIUS - 1, Math.random()),
+						lerp(PLAYER_SPAWN_RADIUS + 1, this.#arenaHeight - PLAYER_SPAWN_RADIUS - 1, Math.random()),
 					);
 				}
 			}
@@ -276,8 +293,8 @@ export class Game {
 		// Point the initial heading from the spawn towards the arena centre, so players always
 		// start by moving inward rather than straight into a wall.
 		const heading = Math.atan2(
-			this.arena.height / 2 - position.y,
-			this.arena.width / 2 - position.x,
+			this.#arenaHeight / 2 - position.y,
+			this.#arenaWidth / 2 - position.x,
 		);
 		return { position, heading };
 	}
@@ -346,61 +363,10 @@ export class Game {
 		this.#onPlayerScoreReportedCbs.forEach((cb) => cb(score));
 	}
 
-	/**
-	 * Gets a chunk of the arena and compresses it into rectangles,
-	 * ready to be sent to clients.
-	 * @param {import("../util/util.js").Rect} rect
-	 * @param {Player} receivingPlayer
-	 */
-	getArenaChunkForMessage(rect, receivingPlayer) {
-		return this.#arena.getChunk(rect, (tileValue) => {
-			return this.getTileTypeForMessage(receivingPlayer, tileValue);
-		});
-	}
-
-	/**
-	 * Gets the type of a tile that can be used for sending to clients.
-	 * The returns a number that the client understands and uses to render the correct tile color.
-	 * The player argument is used to make sure no tiles from other players appear with
-	 * the same color as the tiles owned by the player itself.
-	 *
-	 * @param {import("./Player.js").Player} player The player that the message will be sent to.
-	 * @param {number} tileValue
-	 * @returns {TileTypeForMessage}
-	 */
-	getTileTypeForMessage(player, tileValue) {
-		if (tileValue == -1) {
-			return {
-				colorId: 0, // edge of the world or border of the pit
-				patternId: 0,
-			};
-		}
-		if (tileValue == 0) {
-			return {
-				colorId: 1, // unfilled/grey
-				patternId: 0,
-			};
-		}
-
-		const tilePlayer = this.#players.get(tileValue);
-		if (!tilePlayer) {
-			return {
-				colorId: 1, // unfilled/grey
-				patternId: 0,
-			};
-		}
-
-		const colorId = tilePlayer.skinColorIdForPlayer(player) + 1;
-		return {
-			colorId,
-			patternId: tilePlayer.visibleSkinPatternId,
-		};
-	}
-
 	async #updateNextMinimapPart() {
 		this.#lastMinimapPart = (this.#lastMinimapPart + 1) % 4;
 		const lastMinimapPart = this.#lastMinimapPart;
-		const part = await this.#territory.getMinimapPart(lastMinimapPart, this.#arena.width, this.#arena.height);
+		const part = await this.#territory.getMinimapPart(lastMinimapPart, this.#arenaWidth, this.#arenaHeight);
 		const message = WebSocketConnection.createMinimapMessage(lastMinimapPart, part);
 		this.#minimapMessages[lastMinimapPart] = message;
 		for (const player of this.#players.values()) {
@@ -510,42 +476,6 @@ export class Game {
 	}
 
 	/**
-	 * Yields a list of player positions,
-	 * and the start of their trail if they have one.
-	 * If gameMode is arena, we also yield pit border positions.
-	 * Used to prevent filling locations with other players inside or pit's border.
-	 * We do not yield spectator player positions because they shouldn't prevent filling.
-	 * @param {import("./Player.js").Player} excludePlayer
-	 */
-	*getUnfillableLocations(excludePlayer) {
-		for (const player of this.#players.values()) {
-			if (player == excludePlayer || player.permanentlyDead || player.isSpectator) {
-				continue;
-			}
-
-			yield player.getPosition();
-			if (player.isGeneratingTrail) {
-				yield Array.from(player.getTrailVertices())[0];
-			}
-		}
-
-		// We need to prevent pit's border to be filled by players if they capture it.
-		// We only yield top-left and bottom-right pos instead of the whole border to improve performance when filling.
-		// We could check tile type in updateCapturedArea.js instead, but doing it here
-		// is probably better performance wise and also safer for existing gamemodes.
-		if (this.#gameMode == "arena") {
-			yield new Vec2(
-				Math.floor(this.arena.width / 2 - this.arena.pitWidth / 2),
-				Math.floor(this.arena.height / 2 - this.arena.pitHeight / 2),
-			);
-			yield new Vec2(
-				Math.floor(this.arena.width / 2 + this.arena.pitWidth / 2 - 1),
-				Math.floor(this.arena.height / 2 + this.arena.pitHeight / 2 - 1),
-			);
-		}
-	}
-
-	/**
 	 * Sends the position and direction of a player to all nearby players.
 	 * @param {import("./Player.js").Player} player
 	 */
@@ -576,46 +506,6 @@ export class Game {
 	}
 
 	/**
-	 * Sends the current trail of a player to all nearby players.
-	 * @param {import("./Player.js").Player} player
-	 */
-	broadcastPlayerTrail(player) {
-		const message = WebSocketConnection.createTrailMessage(player.id, Array.from(player.getTrailVertices()));
-		for (const nearbyPlayer of player.inOtherPlayerViewports()) {
-			if (nearbyPlayer == player) {
-				// The client that owns the player should receive 0 as player id
-				const samePlayerMessage = WebSocketConnection.createTrailMessage(
-					0,
-					Array.from(player.getTrailVertices()),
-				);
-				nearbyPlayer.connection.send(samePlayerMessage);
-			} else {
-				nearbyPlayer.connection.send(message);
-			}
-		}
-	}
-
-	/**
-	 * Notifies nearby players that the trail this player is currently creating has ended.
-	 * @param {import("./Player.js").Player} player
-	 */
-	broadcastPlayerEmptyTrail(player) {
-		const lastVertex = Array.from(player.getTrailVertices()).at(-1);
-		if (!lastVertex) throw new Error("Assertion failed, trailVertices is empty");
-
-		const message = WebSocketConnection.createEmptyTrailMessage(player.id, lastVertex);
-		for (const nearbyPlayer of player.inOtherPlayerViewports()) {
-			if (nearbyPlayer == player) {
-				// The client that owns the player should receive 0 as player id
-				const samePlayerMessage = WebSocketConnection.createEmptyTrailMessage(0, lastVertex);
-				nearbyPlayer.connection.send(samePlayerMessage);
-			} else {
-				nearbyPlayer.connection.send(message);
-			}
-		}
-	}
-
-	/**
 	 * Notifies nearby players that this player died.
 	 * @param {import("./Player.js").Player} player
 	 */
@@ -633,32 +523,6 @@ export class Game {
 			} else {
 				nearbyPlayer.connection.send(message);
 			}
-		}
-	}
-
-	/**
-	 * Notifies nearby players that a player didn't die after all.
-	 * @param {import("./Player.js").Player} player
-	 */
-	broadcastUndoPlayerDeath(player) {
-		const message = WebSocketConnection.createPlayerUndoDieMessage(player.id);
-		for (const nearbyPlayer of player.inOtherPlayerViewports()) {
-			if (nearbyPlayer == player) {
-				const samePlayerMessage = WebSocketConnection.createPlayerUndoDieMessage(0);
-				nearbyPlayer.connection.send(samePlayerMessage);
-			} else {
-				nearbyPlayer.connection.send(message);
-			}
-		}
-	}
-
-	/**
-	 * @param {number} playerId
-	 */
-	undoPlayerDeath(playerId) {
-		const player = this.#players.get(playerId);
-		if (player) {
-			player.undoDie();
 		}
 	}
 

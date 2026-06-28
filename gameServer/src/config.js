@@ -114,19 +114,10 @@ export const SPAWN_TERRITORY_HALF_TILES = 3;
 export const TERRITORY_NETWORK_SIMPLIFY_EPS = 160;
 
 /**
- * Time in milliseconds that we allow the player to undo events.
- * This is essentially the max ping we allow the player to have before they start having a bad time.
- * If the player kills a player or themselves for instance, we give the client this amount of milliseconds
- * to make a turn and prevent the event from happening.
+ * How long (ms) a dead player remains in the "dying" state before being permanently removed.
+ * Gives the client a brief death animation window.
  */
-export const MAX_UNDO_EVENT_TIME = 600;
-
-/**
- * How many tiles players are allowed to move backwards due to latency.
- * Assuming a speed of 6 tiles per second and a value of 3 would mean that clients need more than 500ms ping
- * in order to not be able to control themselves.
- */
-export const MAX_UNDO_TILE_COUNT = 5;
+export const DEATH_ANIMATION_MS = 600;
 
 /**
  * The maximum allowed skin color id.

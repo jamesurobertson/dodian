@@ -1,21 +1,16 @@
 import { WebSocketConnection } from "../WebSocketConnection.js";
 import {
+	DEATH_ANIMATION_MS,
 	FREE_SKIN_COLOR_COUNT,
 	FREEFORM_MAX_TRAIL_POINTS_HARD,
-	GM_FORCE_FLYING_PATCHES,
-	MAX_UNDO_EVENT_TIME,
-	MIN_TILES_VIEWPORT_RECT_SIZE,
 	PAID_SKIN_PATTERN_IDS,
 	PLAYER_TRAVEL_SPEED,
 	PLAYER_TURN_RATE,
 	SPAWN_PROTECTION_MS,
 	SPAWN_TERRITORY_HALF_TILES,
 	UPDATES_VIEWPORT_RECT_SIZE,
-	VIEWPORT_EDGE_CHUNK_SIZE,
 } from "../config.js";
 import { lerp, Vec2 } from "renda";
-import { checkTrailSegment } from "../util/util.js";
-import { PlayerEventHistory } from "./PlayerEventHistory.js";
 
 const TAU = Math.PI * 2;
 
@@ -54,31 +49,12 @@ export class Player {
 	#connection;
 	#mainInstance;
 
-	#currentTileType = 0;
-
-	/**
-	 * The current position of the player, rounded to the coordinate of the current tile.
-	 */
+	/** The current (continuous, float) position of the player. */
 	#currentPosition;
 
-	/**
-	 * Returns the current position of the player, rounded to the coordinate of the current tile.
-	 */
 	getPosition() {
 		return this.#currentPosition.clone();
 	}
-
-	/**
-	 * The X position of the player when the most recent horizontal edge chunk was sent to the client.
-	 * If the player moves too far away from this position, a new edge chunk will be sent.
-	 */
-	#lastEdgeChunkSendX;
-
-	/**
-	 * The Y position of the player when the most recent vertical edge chunk was sent to the client.
-	 * If the player moves too far away from this position, a new edge chunk will be sent.
-	 */
-	#lastEdgeChunkSendY;
 
 	/**
 	 * Continuous freeform movement state. The player always travels at PLAYER_TRAVEL_SPEED
@@ -110,26 +86,15 @@ export class Player {
 	/** True while a capture is being processed by the worker; freezes the trail lifecycle. */
 	#captureInFlight = false;
 
-	/** @type {Vec2[]} */
-	#trailVertices = [];
-
-	#currentTrailLengthExcludingPos = 0;
-
-	get isGeneratingTrail() {
-		return this.#trailVertices.length > 0;
-	}
-
 	/**
-	 * The bounding box of the current trail, used for hit detection with other players
-	 * and determining which players are inside another player's viewport.
+	 * The player's current position as a point "bounds", used by the viewport queries to decide
+	 * which players can see each other.
 	 * @type {import("../util/util.js").Rect}
 	 */
 	#trailBounds = {
 		min: new Vec2(),
 		max: new Vec2(),
 	};
-
-	#eventHistory = new PlayerEventHistory();
 
 	#capturedTileCount = 0;
 	#maxCapturedTileCount = 0;
@@ -228,32 +193,10 @@ export class Player {
 		this.#heading = heading;
 		this.#targetHeading = heading;
 		this.#freeformTrail.push(this.#currentPosition.clone());
-		this.#lastEdgeChunkSendX = this.#currentPosition.x;
-		this.#lastEdgeChunkSendY = this.#currentPosition.y;
 		this.#playerAddedToViewport(this);
 		this.#currentPositionChanged();
 
-		this.#eventHistory.onUndoEvent((event) => {
-			if (event.type == "kill-player") {
-				this.game.undoPlayerDeath(event.playerId);
-				if (event.deathType != "arena-bounds") {
-					this.#killCount--;
-					this.#killCount = Math.max(0, this.#killCount);
-					this.#sendMyScore();
-				}
-			} else if (event.type == "start-trail") {
-				// The player started creating a trail, we reset it in order to prevent
-				// the tiles underneath the trail from getting filled as a result of the player
-				// returning to their captured area.
-				this.#clearTrailVertices();
-				this.game.broadcastPlayerTrail(this);
-			}
-		});
-
 		if (!this.#isSpectator) {
-			// Keep the legacy tile spawn-fill for now (cosmetic; the tile arena is dormant during
-			// the conversion). Territory area is the authoritative score source.
-			game.arena.fillPlayerSpawn(this.#currentPosition, id);
 			const area = game.territory.setSpawn(
 				id,
 				this.#currentPosition.x,
@@ -262,11 +205,6 @@ export class Player {
 			);
 			this.#setCapturedTileCount(area);
 			this.sendTerritoryToPlayer(this);
-		}
-
-		// We prevent the second way of flying.
-		if (this.#connection.protocolVersion >= 1 || GM_FORCE_FLYING_PATCHES.includes(this.#game.gameMode)) {
-			this.#currentTileType = id;
 		}
 
 		this.#joinTime = performance.now();
@@ -335,71 +273,6 @@ export class Player {
 	}
 
 	/**
-	 * Adds a vertex to the current trail, deduplicating any unnecessary vertices.
-	 * Throws when a diagonal vertex is added.
-	 * @param {Vec2} pos
-	 */
-	#addTrailVertex(pos) {
-		const lastVertexA = this.#trailVertices.at(-1);
-		if (lastVertexA) {
-			if (pos.x == lastVertexA.x && pos.y == lastVertexA.y) {
-				// The last vertex is already at the same location,
-				// we won't do anything to avoid duplicate vertices.
-				return;
-			}
-			if (pos.x != lastVertexA.x && pos.y != lastVertexA.y) {
-				throw new Error(
-					"Assertion failed: Attempted to add a trail vertex that would result in a diagonal segment.",
-				);
-			}
-			const lastVertexB = this.#trailVertices.at(-2);
-			if (lastVertexB) {
-				// We check if the previous two vertices are on the same line as the one we're about to add.
-				// If so, we modify the last vertex instead of adding a new one.
-				if (lastVertexA.x == lastVertexB.x && lastVertexA.x == pos.x) {
-					if (pos.y >= lastVertexA.y && pos.y <= lastVertexB.y) {
-						throw new Error(
-							`Assertion failed: Attempted to add a trail vertex (${pos}) in between two previous vertices. Full trail: ${
-								this.#trailVertices.join(" ")
-							}`,
-						);
-					}
-					lastVertexA.set(pos);
-					return;
-				}
-				if (lastVertexA.y == lastVertexB.y && lastVertexA.y == pos.y) {
-					if (pos.x >= lastVertexA.x && pos.x <= lastVertexB.x) {
-						throw new Error(
-							`Assertion failed: Attempted to add a trail vertex (${pos}) in between two previous vertices. Full trail: ${
-								this.#trailVertices.join(" ")
-							}`,
-						);
-					}
-					lastVertexA.set(pos);
-					return;
-				}
-			}
-		}
-		this.#trailVertices.push(pos.clone());
-		this.#updateTrailLengthExcludingPos();
-	}
-
-	#clearTrailVertices() {
-		this.#trailVertices = [];
-		this.#currentTrailLengthExcludingPos = 0;
-	}
-
-	#updateTrailLengthExcludingPos() {
-		let length = 0;
-		for (let i = 0; i < this.#trailVertices.length - 1; i++) {
-			const vertexA = this.#trailVertices[i];
-			const vertexB = this.#trailVertices[i + 1];
-			length += vertexA.distanceTo(vertexB);
-		}
-		this.#currentTrailLengthExcludingPos = length;
-	}
-
-	/**
 	 * Sends the state of this player to `receivingPlayer`.
 	 * @param {import("./Player.js").Player} receivingPlayer
 	 */
@@ -421,16 +294,6 @@ export class Player {
 		const playerId = this == receivingPlayer ? 0 : this.id;
 		const colorId = this.skinColorIdForPlayer(receivingPlayer);
 		receivingPlayer.connection.sendPlayerSkin(playerId, colorId);
-	}
-
-	/**
-	 * Sends the state of this player to `receivingPlayer`.
-	 * @param {import("./Player.js").Player} receivingPlayer
-	 */
-	sendTrailToPlayer(receivingPlayer) {
-		const playerId = this == receivingPlayer ? 0 : this.id;
-		const message = WebSocketConnection.createTrailMessage(playerId, Array.from(this.#trailVertices));
-		receivingPlayer.connection.send(message);
 	}
 
 	/**
@@ -508,12 +371,6 @@ export class Player {
 		for (const player of this.#playersInViewport) {
 			if (player == this) continue;
 			player.sendPlayerColorToPlayer(this);
-		}
-	}
-
-	*getTrailVertices() {
-		for (const vertex of this.#trailVertices) {
-			yield vertex.clone();
 		}
 	}
 
@@ -669,8 +526,8 @@ export class Player {
 			// The outer world border is a sliding wall, not death: clamp to the arena interior so the
 			// player skims along the edge instead of dying when they reach it.
 			const m = 0.5;
-			this.#currentPosition.x = Math.max(m, Math.min(this.game.arena.width - 1 - m, this.#currentPosition.x));
-			this.#currentPosition.y = Math.max(m, Math.min(this.game.arena.height - 1 - m, this.#currentPosition.y));
+			this.#currentPosition.x = Math.max(m, Math.min(this.game.arenaWidth - 1 - m, this.#currentPosition.x));
+			this.#currentPosition.y = Math.max(m, Math.min(this.game.arenaHeight - 1 - m, this.#currentPosition.y));
 			this.#updateFreeformTrail(prevX, prevY);
 
 			try {
@@ -686,7 +543,7 @@ export class Player {
 
 		if (this.#lastDeathState) {
 			const dt = performance.now() - this.#lastDeathState.dieTime;
-			if (dt > MAX_UNDO_EVENT_TIME) {
+			if (dt > DEATH_ANIMATION_MS) {
 				this.#permanentlyDie();
 			}
 		}
@@ -699,24 +556,10 @@ export class Player {
 	}
 
 	#currentPositionChanged() {
-		// Update the trailbounds
-		if (this.isGeneratingTrail) {
-			this.#trailBounds.min.x = Math.min(this.#trailBounds.min.x, this.#currentPosition.x);
-			this.#trailBounds.min.y = Math.min(this.#trailBounds.min.y, this.#currentPosition.y);
-			this.#trailBounds.max.x = Math.max(this.#trailBounds.max.x, this.#currentPosition.x);
-			this.#trailBounds.max.y = Math.max(this.#trailBounds.max.y, this.#currentPosition.y);
-		} else {
-			this.#trailBounds.min = this.#currentPosition.clone();
-			this.#trailBounds.max = this.#currentPosition.clone();
-		}
-
-		// Update max trail length
-		if (this.isGeneratingTrail) {
-			const lastVertex = this.#trailVertices.at(-1);
-			if (!lastVertex) throw new Error("Assertion failed, trailVertices is empty");
-			const trailLength = lastVertex.distanceTo(this.#currentPosition) + this.#currentTrailLengthExcludingPos;
-			this.#maxTrailLength = Math.max(this.#maxTrailLength, trailLength);
-		}
+		// The player's "bounds" is just their current position; the viewport queries use it to
+		// decide which players can see each other.
+		this.#trailBounds.min = this.#currentPosition.clone();
+		this.#trailBounds.max = this.#currentPosition.clone();
 
 		{
 			// Check if any new players entered or left our viewport
@@ -740,21 +583,14 @@ export class Player {
 			}
 		}
 
-		// The outer world border no longer kills (the player is clamped to it in loop() and slides
-		// along it). In arena mode the central pit border is still lethal.
-		if (!this.isSpectator && this.game.gameMode == "arena") {
-			const tileX = Math.floor(this.#currentPosition.x);
-			const tileY = Math.floor(this.#currentPosition.y);
-			if (this.game.arena.getTileValue(new Vec2(tileX, tileY)) === -1) {
-				this.#killPlayer(this, "arena-bounds");
-			}
+		// In arena mode the central pit is lethal. The outer world border is a sliding wall
+		// (clamped in loop()), not death.
+		if (
+			!this.isSpectator && this.game.gameMode == "arena" &&
+			this.game.isInsidePit(this.#currentPosition.x, this.#currentPosition.y)
+		) {
+			this.#killPlayer(this, "arena-bounds");
 		}
-
-		// Trail-vs-trail collision is reintroduced as continuous segment intersection in the
-		// continuous-collision milestone; the old integer point-in-trail check is removed here.
-
-		// Send new sections of the map when needed.
-		this.#sendRequiredEdgeChunks();
 	}
 
 	/**
@@ -779,7 +615,6 @@ export class Player {
 			const playerDeadMessage = WebSocketConnection.createPlayerDieMessage(player.id, null);
 			this.#connection.send(playerDeadMessage);
 		}
-		player.sendTrailToPlayer(this);
 		player.sendTerritoryToPlayer(this);
 	}
 
@@ -797,92 +632,13 @@ export class Player {
 		this.#connection.sendRemovePlayer(player.id);
 	}
 
-	#sendRequiredEdgeChunks() {
-		const chunkSize = VIEWPORT_EDGE_CHUNK_SIZE;
-		const viewportSize = MIN_TILES_VIEWPORT_RECT_SIZE;
-		/** @type {{x: number, y: number, w: number, h: number} | null} */
-		let chunk = null;
-		if (this.#currentPosition.x >= this.#lastEdgeChunkSendX + chunkSize) {
-			chunk = {
-				x: this.#currentPosition.x + viewportSize,
-				y: this.#lastEdgeChunkSendY - viewportSize - chunkSize,
-				w: chunkSize,
-				h: (viewportSize + chunkSize) * 2,
-			};
-			this.#lastEdgeChunkSendX = this.#currentPosition.x;
-		}
-		if (this.#currentPosition.x <= this.#lastEdgeChunkSendX - chunkSize) {
-			chunk = {
-				x: this.#currentPosition.x - viewportSize - chunkSize,
-				y: this.#lastEdgeChunkSendY - viewportSize - chunkSize,
-				w: chunkSize,
-				h: (viewportSize + chunkSize) * 2,
-			};
-			this.#lastEdgeChunkSendX = this.#currentPosition.x;
-		}
-		if (this.#currentPosition.y >= this.#lastEdgeChunkSendY + chunkSize) {
-			chunk = {
-				x: this.#lastEdgeChunkSendX - viewportSize - chunkSize,
-				y: this.#currentPosition.y + viewportSize,
-				w: (viewportSize + chunkSize) * 2,
-				h: chunkSize,
-			};
-			this.#lastEdgeChunkSendY = this.#currentPosition.y;
-		}
-		if (this.#currentPosition.y <= this.#lastEdgeChunkSendY - chunkSize) {
-			chunk = {
-				x: this.#lastEdgeChunkSendX - viewportSize - chunkSize,
-				y: this.#currentPosition.y - viewportSize - chunkSize,
-				w: (viewportSize + chunkSize) * 2,
-				h: chunkSize,
-			};
-			this.#lastEdgeChunkSendY = this.#currentPosition.y;
-		}
-		if (chunk) {
-			const { x, y, w, h } = chunk;
-			this.sendChunk({
-				min: new Vec2(x, y),
-				max: new Vec2(x + w, y + h),
-			});
-		}
-	}
-
 	/**
-	 * Sends a chunk of tiles from the arena.
-	 * @param {import("../util/util.js").Rect} rect The area to send.
-	 */
-	sendChunk(rect) {
-		const chunkData = this.game.getArenaChunkForMessage(rect, this);
-		for (const rect of chunkData) {
-			this.connection.sendFillRect(rect.rect, rect.tileType.colorId, rect.tileType.patternId, true);
-		}
-	}
-
-	/**
-	 * (re)sends a chunk of tiles from the arena containing entire visible viewport to this player.
-	 */
-	sendCurrentViewportChunk() {
-		const pos = this.getPosition();
-		this.sendChunk({
-			min: pos.clone().subScalar(UPDATES_VIEWPORT_RECT_SIZE),
-			max: pos.clone().addScalar(UPDATES_VIEWPORT_RECT_SIZE),
-		});
-	}
-
-	/**
-	 * Kills another player (or this player itself) and records an event in the event history.
-	 * So that the death can be undone should the player move back in time.
-	 *
+	 * Kills another player (or this player itself).
 	 * @param {Player} otherPlayer
 	 * @param {DeathType} deathType
 	 */
 	#killPlayer(otherPlayer, deathType) {
 		if (otherPlayer.dead) return false;
-		this.#eventHistory.addEvent(this.getPosition(), {
-			type: "kill-player",
-			playerId: otherPlayer.id,
-			deathType,
-		});
 		otherPlayer.#die(deathType, this.name);
 		if (deathType != "arena-bounds") {
 			this.#killCount++;
@@ -909,11 +665,6 @@ export class Player {
 		// Clear the continuous trail so a dead player's trail can no longer cut anyone.
 		this.#freeformTrail = [];
 		this.game.broadcastPlayerDeath(this);
-	}
-
-	undoDie() {
-		this.#lastDeathState = null;
-		this.game.broadcastUndoPlayerDeath(this);
 	}
 
 	#permanentlyDie() {
@@ -959,112 +710,13 @@ export class Player {
 		}
 	}
 
-	#allMyTilesCleared = false;
+	#territoryCleared = false;
 
-	/**
-	 * Resets all owned tiles of this player back to tiles that are not owned by anyone.
-	 * This can only be called once, so after this has been called, no attempts should be
-	 * made to add new tiles of this player to the arena.
-	 */
+	/** Removes this player's territory. Idempotent. */
 	#clearAllMyTiles() {
-		if (this.#allMyTilesCleared || this.#isSpectator) return;
-		this.#allMyTilesCleared = true;
-		this.game.arena.clearAllPlayerTiles(this.id);
+		if (this.#territoryCleared || this.#isSpectator) return;
+		this.#territoryCleared = true;
 		this.game.territory.remove(this.id);
-	}
-
-	/**
-	 * This will cause the arena worker to fire fill rect events which cover all filled tiles for this player.
-	 * This can be used to update the color of this player.
-	 */
-	fireAllMyTileUpdates() {
-		if (this.#isSpectator) return;
-		this.game.arena.fireAllPlayerTileUpdates(this.id);
-	}
-
-	/**
-	 * @param {Vec2} point
-	 */
-	rectOverlapsTrailBounds(point) {
-		const bounds = this.#trailBounds;
-		return point.x >= bounds.min.x && point.y >= bounds.min.y && point.x <= bounds.max.x && point.y <= bounds.max.y;
-	}
-
-	/**
-	 * Checks if a point is inside the trail of the player.
-	 * If the player is not generating a trail,
-	 * this checks if the point lies at the exact location of the current player.
-	 * @param {Vec2} point
-	 * @param {Object} options
-	 * @param {boolean} [options.includeLastSegments] When true, also checks if the point lies between the
-	 * last two segments and the current position of the player. When checking if the player is touching their own
-	 * trail, we need to ignore the last two segments since the player position is always touching the last segment.
-	 * If the player made a turn recently, it might also be inside the second to last segment.
-	 */
-	pointIsInTrail(point, {
-		includeLastSegments = true,
-	} = {}) {
-		if (this.isGeneratingTrail) {
-			const verticesLengthOffset = includeLastSegments ? 1 : 2;
-			const verticesLength = this.#trailVertices.length - verticesLengthOffset;
-			for (let i = 0; i < verticesLength; i++) {
-				const start = this.#trailVertices[i];
-				const end = this.#trailVertices[i + 1];
-				if (checkTrailSegment(point, start, end)) return true;
-			}
-			if (includeLastSegments) {
-				const lastVertex = this.#trailVertices.at(-1);
-				if (!lastVertex) throw new Error("Assertion failed, trailVertices is empty");
-				if (checkTrailSegment(point, lastVertex, this.#currentPosition)) return true;
-			}
-			return false;
-		} else {
-			if (includeLastSegments) {
-				return point.x == this.#currentPosition.x && point.y == this.#currentPosition.y;
-			}
-			return false;
-		}
-	}
-
-	/**
-	 * Checks if the type of the tile the player is currently on has changed.
-	 * This can happen either because the player moved to a new coordinate,
-	 * or because the current tile type got changed to that of another player.
-	 * @param {Vec2} previousPosition Used for the final vertex when a trail ends.
-	 */
-	#updateCurrentTile(previousPosition) {
-		const tileValue = this.#game.arena.getTileValue(this.#currentPosition);
-		if (this.#currentTileType != tileValue) {
-			// When the player moves out of their captured area, we will start a new trail.
-			if (tileValue != this.#id && !this.isGeneratingTrail) {
-				this.#eventHistory.addEvent(this.getPosition(), { type: "start-trail" });
-				this.#addTrailVertex(this.#currentPosition);
-				this.game.broadcastPlayerTrail(this);
-			}
-
-			// When the player comes back into their captured area, we add a final vertex to the trail,
-			// Then fill the tiles underneath the trail, and finally clear the trail.
-			if (tileValue == this.#id && this.isGeneratingTrail) {
-				this.#addTrailVertex(previousPosition);
-				if (this.#allMyTilesCleared) {
-					throw new Error("Assertion failed, player tiles have already been removed from the arena.");
-				}
-				this.game.arena.fillPlayerTrail(this.#trailVertices, this.id);
-				this.#updateCapturedArea();
-				this.game.broadcastPlayerEmptyTrail(this);
-				this.#clearTrailVertices();
-			}
-
-			this.#currentTileType = tileValue;
-		}
-	}
-
-	async #updateCapturedArea() {
-		const totalFilledTileCount = await this.game.arena.updateCapturedArea(
-			this.id,
-			Array.from(this.game.getUnfillableLocations(this)),
-		);
-		this.#setCapturedTileCount(totalFilledTileCount);
 	}
 
 	/**
