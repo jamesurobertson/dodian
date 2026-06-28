@@ -626,7 +626,9 @@ export class Player {
 	 */
 	#playerAddedToViewport(player) {
 		if (this.#playersInViewport.has(player)) return;
-		if (player.permanentlyDead) return;
+		// Don't (re)introduce a dead player into a viewport — it would re-send their state and make
+		// the client briefly revive them during the death animation.
+		if (player.permanentlyDead || player.dead) return;
 		this.#playersInViewport.add(player);
 		player.#inOtherPlayerViewports.add(this);
 		player.sendPlayerStateToPlayer(this);

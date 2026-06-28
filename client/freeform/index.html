@@ -770,13 +770,15 @@
 				var x = view.getUint32(1, false) / POS_SCALE, y = view.getUint32(5, false) / POS_SCALE;
 				var id = view.getUint16(9, false), heading = view.getUint16(11, false) / 65536 * TAU;
 				var p = getPlayer(id);
+				if (p.dead) return; // a dead player never revives; ignore stray state until REMOVE_PLAYER
 				p.target = { x: x, y: y };
 				p.heading = heading;
 				p.t = performance.now();
-				p.dead = false;
 				if (!p.pos) p.pos = { x: x, y: y };
 			} else if (type === S.SET_PLAYER_TERRITORY) {
 				var pid = view.getUint16(1, false), ringCount = view.getUint16(3, false), c = 5, rings = [];
+				if (getPlayer(pid).dead) return; // don't resurrect a dead player's island
+
 				for (var r = 0; r < ringCount; r++) {
 					var vc = view.getUint16(c, false);
 					c += 2;
@@ -970,8 +972,13 @@
 				if (!pt.trail || pt.trail.length < 2) continue;
 				ctx.beginPath();
 				ctx.moveTo(sx(pt.trail[0][0]), sy(pt.trail[0][1]));
-				for (var m = 1; m < pt.trail.length; m++) ctx.lineTo(sx(pt.trail[m][0]), sy(pt.trail[m][1]));
+				// Draw up to the second-to-last streamed point, then connect straight to the smooth
+				// render position, so the head ends solidly at the marker instead of fluttering at
+				// the jittery last streamed point.
+				var lastIdx = pt.trail.length - 1;
+				for (var m = 1; m < lastIdx; m++) ctx.lineTo(sx(pt.trail[m][0]), sy(pt.trail[m][1]));
 				if (pt.pos) ctx.lineTo(sx(pt.pos.x), sy(pt.pos.y));
+				else ctx.lineTo(sx(pt.trail[lastIdx][0]), sy(pt.trail[lastIdx][1]));
 				ctx.strokeStyle = colorForId(pt.colorId);
 				ctx.lineWidth = Math.max(3, TILE_PX * 0.6);
 				ctx.lineJoin = "round";
