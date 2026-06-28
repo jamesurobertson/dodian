@@ -546,6 +546,34 @@ export class WebSocketConnection {
 	}
 
 	/**
+	 * Encodes a player's continuous trail (the path they've drawn since leaving their territory) so
+	 * the client can render it directly instead of deriving it. Points are tile-unit positions sent
+	 * as tile*256 fixed-point u32, matching PLAYER_STATE.
+	 *
+	 * Layout: [type, playerId:u16, pointCount:u16, (x:u32, y:u32) * pointCount]
+	 * @param {number} playerId
+	 * @param {{x: number, y: number}[]} points
+	 */
+	static createFreeformTrailMessage(playerId, points) {
+		const buffer = new ArrayBuffer(5 + points.length * 8);
+		const view = new DataView(buffer);
+		let cursor = 0;
+		view.setUint8(cursor, WebSocketConnection.SendAction.SET_PLAYER_TRAIL);
+		cursor++;
+		view.setUint16(cursor, playerId, false);
+		cursor += 2;
+		view.setUint16(cursor, points.length, false);
+		cursor += 2;
+		for (const point of points) {
+			view.setUint32(cursor, Math.max(0, Math.round(point.x * POSITION_NETWORK_SCALE)), false);
+			cursor += 4;
+			view.setUint32(cursor, Math.max(0, Math.round(point.y * POSITION_NETWORK_SCALE)), false);
+			cursor += 4;
+		}
+		return buffer;
+	}
+
+	/**
 	 * @param {number} playerId
 	 * @param {Vec2?} position The position where the player died. This is only useful when the player
 	 * died while hitting a wall or their own trail. In that case we want to make it clearly visible that this is

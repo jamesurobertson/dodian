@@ -505,6 +505,16 @@ export class Game {
 	}
 
 	/**
+	 * Streams the player's continuous trail to all nearby players (and themselves).
+	 * @param {import("./Player.js").Player} player
+	 */
+	broadcastFreeformTrail(player) {
+		for (const nearbyPlayer of player.inOtherPlayerViewports()) {
+			player.sendFreeformTrailToPlayer(nearbyPlayer);
+		}
+	}
+
+	/**
 	 * Sends the current color of the player to all nearby players.
 	 * @param {import("./Player.js").Player} player
 	 */

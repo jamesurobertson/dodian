@@ -7,7 +7,8 @@
  */
 
 const port = Number(Deno.args[0] || 9998);
-const PROTOCOL_VERSION = 13, READY = 4, PLAYER_STATE = 2, SET_PLAYER_TERRITORY = 25;
+const PROTOCOL_VERSION = 13, READY = 4, PLAYER_STATE = 2, SET_PLAYER_TERRITORY = 25, SET_PLAYER_TRAIL = 4;
+let trailMsgs = 0, trailWithPoints = 0;
 
 /** @type {Record<number, {fx:number, fy:number, moved:number, lx:number, ly:number}>} */
 const others = {};
@@ -40,6 +41,9 @@ ws.addEventListener("message", (e) => {
 	} else if (t === SET_PLAYER_TERRITORY) {
 		const pid = v.getUint16(1, false);
 		if (pid !== 0 && v.getUint16(3, false) > 0) territoriesSeen.add(pid);
+	} else if (t === SET_PLAYER_TRAIL) {
+		trailMsgs++;
+		if (v.getUint16(3, false) > 0) trailWithPoints++;
 	}
 });
 ws.addEventListener("error", (e) => {
@@ -55,7 +59,7 @@ setTimeout(() => {
 	console.log(
 		`bots seen=${ids.length} roaming(>4 tiles)=${roaming} maxMoved=${
 			maxMoved.toFixed(1)
-		} withTerritory=${territoriesSeen.size}`,
+		} withTerritory=${territoriesSeen.size} trailMsgs=${trailMsgs} (withPoints=${trailWithPoints})`,
 	);
 	if (ids.length >= 3 && roaming >= 3) {
 		console.log("PASS: bots are present and roaming.");

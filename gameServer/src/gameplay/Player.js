@@ -86,6 +86,9 @@ export class Player {
 	/** True while a capture is being processed by the worker; freezes the trail lifecycle. */
 	#captureInFlight = false;
 
+	/** Length of the trail the last time it was broadcast; used to send one final clear. */
+	#prevTrailLen = 0;
+
 	/**
 	 * The player's current position as a point "bounds", used by the viewport queries to decide
 	 * which players can see each other.
@@ -304,6 +307,16 @@ export class Player {
 		const playerId = this == receivingPlayer ? 0 : this.id;
 		const mp = this.game.territory.getMultiPolygon(this.id);
 		const message = WebSocketConnection.createTerritoryMessage(playerId, mp);
+		receivingPlayer.connection.send(message);
+	}
+
+	/**
+	 * Sends this player's continuous trail to `receivingPlayer` so it can render it directly.
+	 * @param {import("./Player.js").Player} receivingPlayer
+	 */
+	sendFreeformTrailToPlayer(receivingPlayer) {
+		const playerId = this == receivingPlayer ? 0 : this.id;
+		const message = WebSocketConnection.createFreeformTrailMessage(playerId, this.#freeformTrail);
 		receivingPlayer.connection.send(message);
 	}
 
@@ -532,6 +545,13 @@ export class Player {
 
 			try {
 				this.game.broadcastPlayerState(this);
+				// Stream the authoritative trail to viewers (and one final empty message when it
+				// clears) so clients render it directly instead of deriving it from jittery positions.
+				const trailLen = this.#freeformTrail.length;
+				if (trailLen > 0 || this.#prevTrailLen > 0) {
+					this.game.broadcastFreeformTrail(this);
+				}
+				this.#prevTrailLen = trailLen;
 				this.#currentPositionChanged();
 			} catch (e) {
 				console.error(e);
@@ -616,6 +636,7 @@ export class Player {
 			this.#connection.send(playerDeadMessage);
 		}
 		player.sendTerritoryToPlayer(this);
+		player.sendFreeformTrailToPlayer(this);
 	}
 
 	/**
