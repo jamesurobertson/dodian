@@ -16,6 +16,7 @@ export class Main {
 	 * @param {number} [options.pitWidth] pit is specific to arena gamemode and refers to the thing in the middle of the arena.
 	 * @param {number} [options.pitHeight] pit is specific to arena gamemode and refers to the thing in the middle of the arena.
 	 * @param {import("./gameplay/Game.js").GameModes} [options.gameMode]
+	 * @param {number} [options.botCount] How many AI bots to keep roaming the arena.
 	 * @param {GameServerHooks} [options.hooks]
 	 */
 	constructor({
@@ -24,6 +25,7 @@ export class Main {
 		pitWidth = 16,
 		pitHeight = 16,
 		gameMode = "default",
+		botCount = 0,
 		hooks,
 	}) {
 		this.hooks = hooks;
@@ -34,6 +36,7 @@ export class Main {
 			pitWidth,
 			pitHeight,
 			gameMode,
+			botCount,
 		});
 		this.websocketManager = new WebSocketManager(this, this.game);
 		this.game.onPlayerCountChange((playerCount) => {

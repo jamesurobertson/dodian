@@ -54,6 +54,10 @@ if (import.meta.main) {
     Sets the game mode of the game. Valid values are:
     ${validGamemodes.join(" ")}
     Example: ${executableName} --gameMode default
+
+--bots
+    How many AI bots to keep roaming the arena. Defaults to 0.
+    Example: ${executableName} --bots 10
 `);
 	} else {
 		const port = args.p || args.port || 8080;
@@ -65,6 +69,7 @@ if (import.meta.main) {
 		let pitHeight = parseInt(args.pitHeight || 16);
 		const pitSize = parseInt(args.pitSize || 16);
 		const gameMode = args.g || args.gameMode || "default";
+		const botCount = parseInt(args.bots || args.botCount || 0) || 0;
 		if (!validGamemodes.includes(gameMode)) {
 			throw new Error(`"${gameMode}" is not a valid gamemode.`);
 		}
@@ -82,6 +87,7 @@ if (import.meta.main) {
 			pitWidth,
 			pitHeight,
 			gameMode,
+			botCount,
 		});
 		main.init({ port, hostname });
 	}

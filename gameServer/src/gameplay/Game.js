@@ -3,6 +3,7 @@
 import { lerp, SingleInstancePromise, Vec2 } from "renda";
 import { Player } from "./Player.js";
 import { Territory } from "./Territory.js";
+import { BotManager } from "./BotManager.js";
 import { WebSocketConnection } from "../WebSocketConnection.js";
 import {
 	FREEFORM_SELF_COLLISION_GRACE_SEGMENTS,
@@ -72,6 +73,9 @@ export class Game {
 		return this.#territory;
 	}
 
+	/** @type {BotManager} */
+	#botManager;
+
 	/**
 	 * @param {number} id
 	 * @returns {Player | undefined}
@@ -102,6 +106,7 @@ export class Game {
 	 * @param {number} [options.pitWidth]
 	 * @param {number} [options.pitHeight]
 	 * @param {GameModes} [options.gameMode]
+	 * @param {number} [options.botCount]
 	 */
 	constructor(applicationLoop, mainInstance, {
 		arenaWidth = 600,
@@ -109,6 +114,7 @@ export class Game {
 		pitWidth = 16,
 		pitHeight = 16,
 		gameMode = "default",
+		botCount = 0,
 	} = {}) {
 		this.#mainInstance = mainInstance;
 		this.#gameMode = gameMode;
@@ -116,6 +122,7 @@ export class Game {
 		this.#arenaHeight = arenaHeight;
 		this.#pitWidth = pitWidth;
 		this.#pitHeight = pitHeight;
+		this.#botManager = new BotManager(this, botCount);
 
 		// When a capture's worker result arrives, apply the new area + broadcast territory for every
 		// affected player, and let the capturing player resume its trail lifecycle.
@@ -146,6 +153,8 @@ export class Game {
 	 * @param {number} dt
 	 */
 	loop(now, dt) {
+		this.#botManager.tick(now);
+
 		for (const player of this.#players.values()) {
 			player.loop(now, dt);
 		}
