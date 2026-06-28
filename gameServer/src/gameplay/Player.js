@@ -89,16 +89,6 @@ export class Player {
 	/** Length of the trail the last time it was broadcast; used to send one final clear. */
 	#prevTrailLen = 0;
 
-	/**
-	 * The player's current position as a point "bounds", used by the viewport queries to decide
-	 * which players can see each other.
-	 * @type {import("../util/util.js").Rect}
-	 */
-	#trailBounds = {
-		min: new Vec2(),
-		max: new Vec2(),
-	};
-
 	#capturedTileCount = 0;
 	#maxCapturedTileCount = 0;
 	#killCount = 0;
@@ -242,14 +232,21 @@ export class Player {
 	}
 
 	/**
-	 * Returns the bounding box of the trail of the player.
-	 * If the player doesn't have a trail, the bounding box is just the player's position.
+	 * Visibility bounds: a box covering both the player's current position AND their whole
+	 * territory. The viewport queries use this so you can see a player's land whenever it overlaps
+	 * your view, even if the player themselves is far away.
 	 */
 	getTrailBounds() {
-		return {
-			min: this.#trailBounds.min.clone(),
-			max: this.#trailBounds.max.clone(),
-		};
+		let minX = this.#currentPosition.x, minY = this.#currentPosition.y;
+		let maxX = minX, maxY = minY;
+		const tb = this.game.territory.getBoundsTiles(this.id);
+		if (tb) {
+			minX = Math.min(minX, tb.minX);
+			minY = Math.min(minY, tb.minY);
+			maxX = Math.max(maxX, tb.maxX);
+			maxY = Math.max(maxY, tb.maxY);
+		}
+		return { min: new Vec2(minX, minY), max: new Vec2(maxX, maxY) };
 	}
 
 	/**
@@ -576,11 +573,6 @@ export class Player {
 	}
 
 	#currentPositionChanged() {
-		// The player's "bounds" is just their current position; the viewport queries use it to
-		// decide which players can see each other.
-		this.#trailBounds.min = this.#currentPosition.clone();
-		this.#trailBounds.max = this.#currentPosition.clone();
-
 		{
 			// Check if any new players entered or left our viewport
 			let leftPlayers = new Set([...this.#playersInViewport]);

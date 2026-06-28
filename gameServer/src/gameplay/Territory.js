@@ -1,5 +1,5 @@
 import { TypedMessenger } from "renda";
-import { canonicalize, multiPolygonArea, pointInMultiPolygon } from "../util/geometry.js";
+import { bbox, canonicalize, multiPolygonArea, pointInMultiPolygon } from "../util/geometry.js";
 import { TERRITORY_SUBUNIT_SCALE as SUB } from "../config.js";
 
 /**
@@ -101,6 +101,18 @@ export class Territory {
 	 */
 	getMultiPolygon(playerId) {
 		return this.#mirror.get(playerId);
+	}
+
+	/**
+	 * Bounding box of a player's territory in tile units, or null if they have none.
+	 * @param {number} playerId
+	 * @returns {{minX: number, minY: number, maxX: number, maxY: number} | null}
+	 */
+	getBoundsTiles(playerId) {
+		const mp = this.#mirror.get(playerId);
+		if (!mp || mp.length === 0) return null;
+		const [minX, minY, maxX, maxY] = bbox(mp);
+		return { minX: minX / SUB, minY: minY / SUB, maxX: maxX / SUB, maxY: maxY / SUB };
 	}
 
 	/**

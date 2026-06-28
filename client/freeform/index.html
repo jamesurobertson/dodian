@@ -1103,13 +1103,14 @@
 					if (minimapGrid[gy * 80 + gx]) mctx.fillRect(gx * cell, gy * cell, Math.ceil(cell), Math.ceil(cell));
 				}
 			}
-			var s = 150 / mapSize;
-			for (var id in players) {
-				var p = players[id];
-				if (!p.pos) continue;
-				mctx.fillStyle = id === "0" ? "#F2B45C" : colorForId(p.colorId);
+			// Only your own position is marked — the minimap shows claimed land, not where other
+			// players are (keeping enemy positions hidden fits the limited-vision design).
+			var me = players[0];
+			if (me && me.pos) {
+				var s = 150 / mapSize;
+				mctx.fillStyle = "#F2B45C";
 				mctx.beginPath();
-				mctx.arc(p.pos.x * s, p.pos.y * s, id === "0" ? 3 : 2, 0, TAU);
+				mctx.arc(me.pos.x * s, me.pos.y * s, 3, 0, TAU);
 				mctx.fill();
 			}
 		}
