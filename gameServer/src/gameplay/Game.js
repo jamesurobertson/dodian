@@ -3,15 +3,20 @@
 import { lerp, SingleInstancePromise, Vec2 } from "renda";
 import { Arena } from "./Arena.js";
 import { Player } from "./Player.js";
+import { Territory } from "./Territory.js";
 import { WebSocketConnection } from "../WebSocketConnection.js";
 import {
+	FREEFORM_SELF_COLLISION_GRACE_SEGMENTS,
 	GM_REPORT_SCORES,
 	LEADERBOARD_UPDATE_FREQUENCY,
 	MINIMAP_PART_UPDATE_FREQUENCY,
 	PLAYER_SPAWN_RADIUS,
 	REQUIRED_PLAYER_COUNT_FOR_GLOBAL_LEADERBOARD,
+	TRAIL_HASH_CELL_SIZE,
 } from "../config.js";
 import { ApplicationLoop } from "../ApplicationLoop.js";
+import { SpatialHash } from "../util/SpatialHash.js";
+import { segmentsIntersect } from "../util/geometry.js";
 
 /**
  * @typedef TileTypeForMessage
@@ -29,6 +34,24 @@ export class Game {
 	#gameMode;
 	get gameMode() {
 		return this.#gameMode;
+	}
+
+	/** Broad-phase acceleration structure for continuous trail collision (rebuilt each tick). */
+	#trailHash = new SpatialHash(TRAIL_HASH_CELL_SIZE);
+
+	/** Authoritative polygon territory for all players. */
+	#territory = new Territory();
+
+	get territory() {
+		return this.#territory;
+	}
+
+	/**
+	 * @param {number} id
+	 * @returns {Player | undefined}
+	 */
+	getPlayerById(id) {
+		return this.#players.get(id);
 	}
 
 	get arena() {
@@ -75,6 +98,20 @@ export class Game {
 			}
 		});
 
+		// When a capture's worker result arrives, apply the new area + broadcast territory for every
+		// affected player, and let the capturing player resume its trail lifecycle.
+		this.#territory.onCaptureResolved((capturerId, affected) => {
+			for (const a of affected) {
+				const p = this.#players.get(a.id);
+				if (p) {
+					p.applyCapturedArea(a.area);
+					this.broadcastPlayerTerritory(p);
+				}
+			}
+			const capturer = this.#players.get(capturerId);
+			if (capturer) capturer.onCaptureResolved();
+		});
+
 		this.#updateNextMinimapPartInstance = new SingleInstancePromise(() => this.#updateNextMinimapPart());
 
 		applicationLoop.onSlowTickEnded(() => {
@@ -95,6 +132,8 @@ export class Game {
 			player.loop(now, dt);
 		}
 
+		this.#runTrailCollisions();
+
 		if (now - this.#lastMinimapUpdateTime > MINIMAP_PART_UPDATE_FREQUENCY) {
 			this.#lastMinimapUpdateTime = now;
 			this.#updateNextMinimapPartInstance.run();
@@ -103,6 +142,48 @@ export class Game {
 		if (now - this.#lastLeaderboardSendTime > LEADERBOARD_UPDATE_FREQUENCY) {
 			this.#lastLeaderboardSendTime = now;
 			this.#sendLeaderboard();
+		}
+	}
+
+	/**
+	 * Continuous trail collision pass, run once per tick after every player has moved.
+	 * Rebuilds the spatial hash from all living players' trail segments, then tests each
+	 * player's head segment against nearby segments:
+	 *  - crossing another player's trail cuts it, killing that player and crediting the mover;
+	 *  - crossing your own trail (beyond a small grace window next to the head) kills you.
+	 */
+	#runTrailCollisions() {
+		if (this.#gameMode == "drawing") return;
+		const hash = this.#trailHash;
+		hash.clear();
+		for (const player of this.#players.values()) {
+			if (player.dead || player.isSpectator) continue;
+			for (const seg of player.getFreeformTrailSegments()) {
+				hash.insertSegment(seg.ax, seg.ay, seg.bx, seg.by, seg);
+			}
+		}
+		for (const mover of this.#players.values()) {
+			if (mover.dead || mover.isSpectator) continue;
+			const head = mover.getFreeformHeadSegment();
+			if (!head) continue;
+			const ownLen = mover.freeformTrailLength;
+			const candidates = hash.querySegment(head.ax, head.ay, head.bx, head.by);
+			for (const seg of candidates) {
+				if (seg.player == mover) {
+					// The head always touches its newest segment(s); ignore them.
+					if (seg.index >= ownLen - 1 - FREEFORM_SELF_COLLISION_GRACE_SEGMENTS) continue;
+				} else if (seg.player.dead) {
+					continue;
+				}
+				if (segmentsIntersect(head.ax, head.ay, head.bx, head.by, seg.ax, seg.ay, seg.bx, seg.by)) {
+					if (seg.player == mover) {
+						mover.killBySelfTrail();
+					} else {
+						mover.killByTrailCut(seg.player);
+					}
+					break;
+				}
+			}
 		}
 	}
 
@@ -142,7 +223,7 @@ export class Game {
 	}
 
 	/**
-	 * @returns {{position: Vec2, direction: import("./Player.js").Direction}}
+	 * @returns {{position: Vec2, heading: number}}
 	 */
 	getNewSpawnPosition() {
 		const position = (() => {
@@ -174,34 +255,15 @@ export class Game {
 				tempY,
 			);
 		})();
-		/** @type {{direction: import("./Player.js").UnpausedDirection, distance: number}[]} */
-		const wallDistances = [
-			{
-				direction: "up",
-				distance: this.arena.height - position.y,
-			},
-			{
-				direction: "down",
-				distance: position.y,
-			},
-			{
-				direction: "right",
-				distance: position.x,
-			},
-			{
-				direction: "left",
-				distance: this.arena.width - position.x,
-			},
-		];
-		let closestWall = null;
-		for (const wall of wallDistances) {
-			if (!closestWall || wall.distance < closestWall.distance) {
-				closestWall = wall;
-			}
-		}
+		// Point the initial heading from the spawn towards the arena centre, so players always
+		// start by moving inward rather than straight into a wall.
+		const heading = Math.atan2(
+			this.arena.height / 2 - position.y,
+			this.arena.width / 2 - position.x,
+		);
 		return {
 			position,
-			direction: this.#gameMode == "arena" ? "paused" : closestWall?.direction || "up",
+			heading,
 		};
 	}
 
@@ -323,7 +385,7 @@ export class Game {
 	async #updateNextMinimapPart() {
 		this.#lastMinimapPart = (this.#lastMinimapPart + 1) % 4;
 		const lastMinimapPart = this.#lastMinimapPart;
-		const part = await this.#arena.getMinimapPart(lastMinimapPart);
+		const part = await this.#territory.getMinimapPart(lastMinimapPart, this.#arena.width, this.#arena.height);
 		const message = WebSocketConnection.createMinimapMessage(lastMinimapPart, part);
 		this.#minimapMessages[lastMinimapPart] = message;
 		for (const player of this.#players.values()) {
@@ -475,6 +537,16 @@ export class Game {
 	broadcastPlayerState(player) {
 		for (const nearbyPlayer of player.inOtherPlayerViewports()) {
 			player.sendPlayerStateToPlayer(nearbyPlayer);
+		}
+	}
+
+	/**
+	 * Sends the player's polygon territory to all nearby players (and themselves).
+	 * @param {import("./Player.js").Player} player
+	 */
+	broadcastPlayerTerritory(player) {
+		for (const nearbyPlayer of player.inOtherPlayerViewports()) {
+			player.sendTerritoryToPlayer(nearbyPlayer);
 		}
 	}
 

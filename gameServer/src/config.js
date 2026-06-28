@@ -37,6 +37,71 @@ export const PLAYER_SPAWN_RADIUS = 2;
 export const PLAYER_TRAVEL_SPEED = 0.006;
 
 /**
+ * Continuous (freeform) movement: the maximum rate at which a player can rotate their
+ * heading, in radians per millisecond. The server steers the current heading towards the
+ * client-requested target heading, clamped by this value each tick. This both gives the
+ * game a slither.io-style turn feel and acts as movement anti-cheat (the client can only
+ * ever request a heading; the server owns position and how fast the heading may change).
+ *
+ * 0.005 rad/ms = 5 rad/s, so a full 180° reversal takes ~0.63s.
+ */
+export const PLAYER_TURN_RATE = 0.005;
+
+/**
+ * Fixed-point scale used when encoding continuous positions on the wire.
+ * A position in tile units is sent as round(pos * POSITION_NETWORK_SCALE) in a Uint32.
+ * 256 gives 1/256-tile precision, smooth enough for rendering and interpolation.
+ */
+export const POSITION_NETWORK_SCALE = 256;
+
+/**
+ * Continuous trail: maximum number of points retained in a player's trail polyline.
+ * (Temporary tail cap used while territory capture is being built; once territory drives
+ * the trail lifecycle the trail is instead bounded by how far the player ventures out.)
+ */
+export const FREEFORM_MAX_TRAIL_POINTS = 120;
+
+/**
+ * Hard cap on the number of points in a single excursion trail. At ~0.3 tiles/tick this is a
+ * very long journey; exceeding it kills the player. Bounds CPU and polygon complexity, and stops
+ * a griefer from wandering forever to build an arbitrarily large capture/trail.
+ */
+export const FREEFORM_MAX_TRAIL_POINTS_HARD = 2500;
+
+/**
+ * Continuous self-collision grace: how many of the most recent trail segments next to the
+ * head are ignored when testing a player against their own trail. The head always touches
+ * its newest segment, and a recent turn can place the head on the second-newest, so these
+ * must be excluded or the player would instantly kill themselves.
+ */
+export const FREEFORM_SELF_COLLISION_GRACE_SEGMENTS = 8;
+
+/**
+ * Cell size (in tiles) of the spatial hash used as the broad-phase for trail collision.
+ */
+export const TRAIL_HASH_CELL_SIZE = 4;
+
+/**
+ * Fixed-point scale (sub-units per tile) for polygon territory geometry. Polygon clipping
+ * runs on integers at this scale; validated in Phase 0 (scripts/clippingHarness) to keep
+ * vertex counts bounded with canonicalize().
+ */
+export const TERRITORY_SUBUNIT_SCALE = 1024;
+
+/**
+ * Half the side length (in tiles) of the square territory a player is granted on spawn.
+ */
+export const SPAWN_TERRITORY_HALF_TILES = 3;
+
+/**
+ * Douglas-Peucker epsilon (in territory sub-units) applied to territory polygons before sending
+ * them to clients. ~0.16 tiles: collapses the many near-collinear vertices a continuous capture
+ * loop produces, cutting bandwidth and client render cost with no visible change. The authoritative
+ * geometry and score keep using the full-resolution polygon.
+ */
+export const TERRITORY_NETWORK_SIMPLIFY_EPS = 160;
+
+/**
  * Time in milliseconds that we allow the player to undo events.
  * This is essentially the max ping we allow the player to have before they start having a bad time.
  * If the player kills a player or themselves for instance, we give the client this amount of milliseconds

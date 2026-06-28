@@ -1,18 +1,22 @@
 import { WebSocketConnection } from "../WebSocketConnection.js";
 import {
 	FREE_SKIN_COLOR_COUNT,
+	FREEFORM_MAX_TRAIL_POINTS_HARD,
 	GM_FORCE_FLYING_PATCHES,
 	MAX_UNDO_EVENT_TIME,
-	MAX_UNDO_TILE_COUNT,
 	MIN_TILES_VIEWPORT_RECT_SIZE,
 	PAID_SKIN_PATTERN_IDS,
 	PLAYER_TRAVEL_SPEED,
+	PLAYER_TURN_RATE,
+	SPAWN_TERRITORY_HALF_TILES,
 	UPDATES_VIEWPORT_RECT_SIZE,
 	VIEWPORT_EDGE_CHUNK_SIZE,
 } from "../config.js";
 import { lerp, Vec2 } from "renda";
 import { checkTrailSegment } from "../util/util.js";
 import { PlayerEventHistory } from "./PlayerEventHistory.js";
+
+const TAU = Math.PI * 2;
 
 /**
  * When sent inside messages, these translate to an integer:
@@ -76,36 +80,34 @@ export class Player {
 	#lastEdgeChunkSendY;
 
 	/**
-	 * Indicates how many tiles the player has moved on the client side.
-	 * Any value below 1 means the player is still on its current tile.
-	 * Any value above 1 means the player has travelled that many tiles, each of which should
-	 * be checked for updates to their trail etc.
+	 * Continuous freeform movement state. The player always travels at PLAYER_TRAVEL_SPEED
+	 * along `#heading` (radians, 0 = +x / "right", increasing clockwise because +y is down).
+	 * The client may only request a `#targetHeading`; each tick the server rotates `#heading`
+	 * towards it, clamped by PLAYER_TURN_RATE. The server is the sole authority on position.
 	 */
-	#nextTileProgress = 0;
+	#heading = 0;
+	#targetHeading = 0;
 
-	/** @type {Direction} */
-	#currentDirection = "paused";
-	/**
-	 * The direction the player was moving in before they paused.
-	 * Or the current direction if the player is not currently paused.
-	 * @type {Exclude<Direction, "paused">}
-	 */
-	#lastUnpausedDirection = "up";
-
-	get currentDirection() {
-		return this.#currentDirection;
+	get heading() {
+		return this.#heading;
 	}
 
 	/**
-	 * We want to allow clients to jump back slightly, but in order to prevent cheaters from abusing this,
-	 * we'll keep track of the last valid position we received from the client.
-	 * We'll use this in combination with the lastUnpausedDirection to verify that the client
-	 * is not trying to move to locations it has never been in the first place.
-	 *
-	 * On top of this, this is also used to ensure players don't send multiple direction changes on a
-	 * single position.
+	 * Continuous freeform trail: the polyline path the player has travelled, as a list of
+	 * float tile positions. Used for trail-vs-trail and self collision in continuous space.
+	 * Separate from the legacy axis-aligned #trailVertices (dormant during the conversion).
+	 * @type {Vec2[]}
 	 */
-	#lastCertainClientPosition;
+	#freeformTrail = [];
+
+	/**
+	 * Whether the player's head is currently inside their own territory. Drives the trail
+	 * lifecycle: leaving territory starts a trail, re-entering closes it and captures area.
+	 */
+	#insideOwnTerritory = true;
+
+	/** True while a capture is being processed by the worker; freezes the trail lifecycle. */
+	#captureInFlight = false;
 
 	/** @type {Vec2[]} */
 	#trailVertices = [];
@@ -125,16 +127,6 @@ export class Player {
 		min: new Vec2(),
 		max: new Vec2(),
 	};
-
-	/**
-	 * @typedef MovementQueueItem
-	 * @property {Direction} direction The direction in which the player started moving.
-	 * @property {Vec2} desiredPosition The location at which the player wishes to start moving. If the player
-	 * has already moved past this point, we could also move them back in time in order to fulfill their request.
-	 */
-
-	/** @type {MovementQueueItem[]} */
-	#movementQueue = [];
 
 	#eventHistory = new PlayerEventHistory();
 
@@ -225,15 +217,13 @@ export class Player {
 		}
 		this.#isSpectator = options.isSpectator;
 
-		const { position, direction } = game.getNewSpawnPosition();
+		const { position, heading } = game.getNewSpawnPosition();
 		this.#currentPosition = position;
-		this.#currentDirection = direction;
-		if (direction != "paused") {
-			this.#lastUnpausedDirection = direction;
-		}
+		this.#heading = heading;
+		this.#targetHeading = heading;
+		this.#freeformTrail.push(this.#currentPosition.clone());
 		this.#lastEdgeChunkSendX = this.#currentPosition.x;
 		this.#lastEdgeChunkSendY = this.#currentPosition.y;
-		this.#lastCertainClientPosition = position.clone();
 		this.#playerAddedToViewport(this);
 		this.#currentPositionChanged();
 
@@ -254,8 +244,19 @@ export class Player {
 			}
 		});
 
-		const capturedTileCount = this.#isSpectator ? 0 : game.arena.fillPlayerSpawn(this.#currentPosition, id);
-		this.#setCapturedTileCount(capturedTileCount);
+		if (!this.#isSpectator) {
+			// Keep the legacy tile spawn-fill for now (cosmetic; the tile arena is dormant during
+			// the conversion). Territory area is the authoritative score source.
+			game.arena.fillPlayerSpawn(this.#currentPosition, id);
+			const area = game.territory.setSpawn(
+				id,
+				this.#currentPosition.x,
+				this.#currentPosition.y,
+				SPAWN_TERRITORY_HALF_TILES,
+			);
+			this.#setCapturedTileCount(area);
+			this.sendTerritoryToPlayer(this);
+		}
 
 		// We prevent the second way of flying.
 		if (this.#connection.protocolVersion >= 1 || GM_FORCE_FLYING_PATCHES.includes(this.#game.gameMode)) {
@@ -305,19 +306,18 @@ export class Player {
 	}
 
 	/**
-	 * The client requested a new position and direction for its player.
-	 * The request will be added to a queue and might not immediately get parsed.
-	 * @param {Direction} direction
-	 * @param {Vec2} desiredPosition
+	 * The client requested a new target heading for its player. The server does not move the
+	 * player to a client-provided position; it only records the desired heading and steers
+	 * towards it (clamped by PLAYER_TURN_RATE) during the game loop. This makes the server the
+	 * sole authority on position, which is the core movement anti-cheat for freeform play.
+	 * @param {number} targetHeading Angle in radians.
 	 */
-	clientPosUpdateRequested(direction, desiredPosition) {
+	clientHeadingUpdateRequested(targetHeading) {
 		if (this.#mainInstance.applicationLoop.currentTickIsSlow()) return;
-
-		this.#movementQueue.push({
-			direction,
-			desiredPosition,
-		});
-		this.#drainMovementQueue();
+		if (!Number.isFinite(targetHeading)) return;
+		if (this.dead || this.isSpectator) return;
+		// Normalise into [0, 2π) so the shortest-rotation math in the loop stays well defined.
+		this.#targetHeading = ((targetHeading % TAU) + TAU) % TAU;
 	}
 
 	/**
@@ -326,89 +326,6 @@ export class Player {
 	setSkin({ colorId, patternId }) {
 		this.#skinColorId = colorId;
 		this.#skinPatternId = patternId;
-	}
-
-	/**
-	 * Tries to empty the movement queue until an item is encountered for which the player hasn't reached its location yet.
-	 */
-	#drainMovementQueue() {
-		let lastMoveWasInvalid = false;
-		while (this.#movementQueue.length > 0) {
-			const firstItem = this.#movementQueue[0];
-			const validity = this.#checkNextMoveValidity(firstItem.desiredPosition, firstItem.direction);
-			if (validity == "invalid") {
-				this.#movementQueue.shift();
-				lastMoveWasInvalid = true;
-				continue;
-			} else {
-				lastMoveWasInvalid = false;
-			}
-
-			let desiredPosition = firstItem.desiredPosition;
-			if (validity == "valid-direction") {
-				desiredPosition = this.#currentPosition.clone();
-			}
-
-			if (this.#isFuturePosition(desiredPosition)) {
-				// The position is valid, but the player hasn't reached this location yet.
-				// We'll wait until the player is there, and then handle it accordingly.
-				// If we handle the movement item now, we would allow players to teleport ahead and move very fast.
-				return;
-			}
-
-			// We prevent the first way of flying, non-paused back and forth stacking immortal and OBP.
-			if (
-				(this.#connection.protocolVersion >= 1 || GM_FORCE_FLYING_PATCHES.includes(this.#game.gameMode)) &&
-				desiredPosition.x == this.#lastCertainClientPosition.x &&
-				desiredPosition.y == this.#lastCertainClientPosition.y &&
-				this.#currentDirection != "paused"
-			) {
-				// The position is valid, but it is at the exact same spot as where a trail vertex has already been placed.
-				// We'll treat this in the same way as the `isFuturePosition()` check, that way
-				// the move is still applied, just one tile later.
-				return;
-			}
-
-			const previousPosition = this.#currentPosition.clone();
-
-			// If the player is dead, we only want to allow moves which would undo the death of the player.
-			if (this.dead) {
-				let hasUndoDeathEvent = false;
-				for (const event of this.#eventHistory.getRecentEvents(previousPosition, desiredPosition)) {
-					if (event.type == "kill-player" && event.playerId == this.id) {
-						hasUndoDeathEvent = true;
-						break;
-					}
-				}
-				if (!hasUndoDeathEvent) {
-					lastMoveWasInvalid = true;
-					break;
-				}
-			}
-
-			this.#movementQueue.shift();
-			this.#currentPosition.set(desiredPosition);
-			this.#lastCertainClientPosition.set(desiredPosition);
-			if (this.isGeneratingTrail) {
-				this.#addTrailVertex(desiredPosition);
-			}
-			this.#currentDirection = firstItem.direction;
-			if (firstItem.direction != "paused") {
-				this.#lastUnpausedDirection = firstItem.direction;
-			}
-			this.#eventHistory.undoRecentEvents(previousPosition, desiredPosition);
-			this.game.broadcastPlayerState(this);
-			if (!this.isSpectator) {
-				this.#updateCurrentTile(this.#currentPosition);
-			}
-			this.#currentPositionChanged();
-		}
-
-		// If the last move was invalid, we want to let the client know so they can
-		// teleport the player to the correct position so that it stays in sync with the position on the server
-		if (lastMoveWasInvalid) {
-			this.sendPlayerStateToPlayer(this);
-		}
 	}
 
 	/**
@@ -477,23 +394,6 @@ export class Player {
 	}
 
 	/**
-	 * Returns true if the target is directly in front of the player (based on their current direction of travel).
-	 * Returns false if it's either behind the player, or not on the current path of the player.
-	 * @param {Vec2} target
-	 */
-	#isFuturePosition(target) {
-		if (target.x == this.#currentPosition.x && target.y == this.#currentPosition.y) return false;
-		if (this.#currentDirection == "paused") return false;
-
-		if (this.#currentDirection == "right" && target.x > this.#currentPosition.x) return true;
-		if (this.#currentDirection == "left" && target.x < this.#currentPosition.x) return true;
-		if (this.#currentDirection == "up" && target.y < this.#currentPosition.y) return true;
-		if (this.#currentDirection == "down" && target.y > this.#currentPosition.y) return true;
-
-		return false;
-	}
-
-	/**
 	 * Sends the state of this player to `receivingPlayer`.
 	 * @param {import("./Player.js").Player} receivingPlayer
 	 */
@@ -503,7 +403,7 @@ export class Player {
 			this.#currentPosition.x,
 			this.#currentPosition.y,
 			playerId,
-			this.#currentDirection,
+			this.#heading,
 		);
 	}
 
@@ -528,75 +428,14 @@ export class Player {
 	}
 
 	/**
-	 * Checks if this is a valid next move.
-	 * @param {Vec2} desiredPosition
-	 * @param {Direction} newDirection
-	 * @returns {"valid" | "invalid" | "valid-direction"}
+	 * Sends this player's polygon territory to `receivingPlayer`.
+	 * @param {import("./Player.js").Player} receivingPlayer
 	 */
-	#checkNextMoveValidity(desiredPosition, newDirection) {
-		// If the player is already moving in the same or opposite direction
-		if (
-			(this.#currentDirection == "right" || this.#currentDirection == "left") &&
-			(newDirection == "right" || newDirection == "left")
-		) {
-			return "invalid";
-		}
-		if (
-			(this.#currentDirection == "up" || this.#currentDirection == "down") &&
-			(newDirection == "up" || newDirection == "down")
-		) {
-			return "invalid";
-		}
-		if (this.#currentDirection == newDirection) return "invalid";
-
-		// Prevent the player from going back into their own trail when paused
-		if (this.#currentDirection == "paused" && this.isGeneratingTrail) {
-			if (this.#lastUnpausedDirection == "right" && newDirection == "left") return "invalid";
-			if (this.#lastUnpausedDirection == "left" && newDirection == "right") return "invalid";
-			if (this.#lastUnpausedDirection == "up" && newDirection == "down") return "invalid";
-			if (this.#lastUnpausedDirection == "down" && newDirection == "up") return "invalid";
-		}
-
-		// We'll make sure the desiredPosition is aligned with the current direction of movement
-		if (this.#lastUnpausedDirection == "left" || this.#lastUnpausedDirection == "right") {
-			if (desiredPosition.y != this.#currentPosition.y) return "valid-direction";
-		}
-		if (this.#lastUnpausedDirection == "up" || this.#lastUnpausedDirection == "down") {
-			if (desiredPosition.x != this.#currentPosition.x) return "valid-direction";
-		}
-
-		// If the player is currently paused, the client will always send the current position.
-		if (this.#currentDirection == "paused") {
-			if (desiredPosition.x != this.#currentPosition.x || desiredPosition.y != this.#currentPosition.y) {
-				return "valid-direction";
-			}
-		}
-
-		// Make sure the client isn't trying to move further back than the last location where it changed direction.
-		// We won't allow the client to send something equal to the lastCertainClientPosition,
-		// otherwise we would allow players to go so far back that it never made a move in the first place.
-		if (
-			(this.#lastUnpausedDirection == "left" && desiredPosition.x >= this.#lastCertainClientPosition.x) ||
-			(this.#lastUnpausedDirection == "right" && desiredPosition.x <= this.#lastCertainClientPosition.x) ||
-			(this.#lastUnpausedDirection == "up" && desiredPosition.y >= this.#lastCertainClientPosition.y) ||
-			(this.#lastUnpausedDirection == "down" && desiredPosition.y <= this.#lastCertainClientPosition.y)
-		) {
-			return "valid-direction";
-		}
-
-		// Make sure players don't move back too far
-		if (
-			Math.abs(this.#currentPosition.x - desiredPosition.x) > MAX_UNDO_TILE_COUNT ||
-			Math.abs(this.#currentPosition.y - desiredPosition.y) > MAX_UNDO_TILE_COUNT
-		) {
-			// Players having a ping higher than 500 should be rare, but when they do,
-			// marking the move as "invalid" would mean the player never gets a chance to change their direction.
-			// So we'll mark this as "valid-direction" instead.
-			// That way only the direction of the movement queue will be used.
-			return "valid-direction";
-		}
-
-		return "valid";
+	sendTerritoryToPlayer(receivingPlayer) {
+		const playerId = this == receivingPlayer ? 0 : this.id;
+		const mp = this.game.territory.getMultiPolygon(this.id);
+		const message = WebSocketConnection.createTerritoryMessage(playerId, mp);
+		receivingPlayer.connection.send(message);
 	}
 
 	get visibleSkinColorId() {
@@ -673,37 +512,168 @@ export class Player {
 	}
 
 	/**
+	 * Territory-driven trail lifecycle, run every tick after the player moves:
+	 *  - inside -> outside: start a trail, seeded at the last inside position so the eventual
+	 *    closing union overlaps the existing territory cleanly;
+	 *  - outside -> inside: append the re-entry point, capture the enclosed area, clear the trail;
+	 *  - still outside: extend the trail;
+	 *  - still inside: no trail.
+	 * @param {number} prevX Previous position x (inside the territory on a leaving transition).
+	 * @param {number} prevY Previous position y.
+	 */
+	#updateFreeformTrail(prevX, prevY) {
+		if (this.#isSpectator) return;
+		// While a capture is in flight, the mirror is briefly stale; freeze the lifecycle until the
+		// worker result lands (onCaptureResolved) to avoid acting on stale inside/outside state.
+		if (this.#captureInFlight) return;
+		const inside = this.game.territory.isInside(this.id, this.#currentPosition.x, this.#currentPosition.y);
+
+		if (this.#insideOwnTerritory && !inside) {
+			this.#freeformTrail = [new Vec2(prevX, prevY), this.#currentPosition.clone()];
+		} else if (!this.#insideOwnTerritory && inside) {
+			this.#freeformTrail.push(this.#currentPosition.clone());
+			this.#captureFreeformTrail();
+			this.#freeformTrail = [];
+		} else if (!inside) {
+			// Only record a point once the head has actually moved a little. Otherwise, when the
+			// player is pinned against the border (or barely moving), duplicate points pile up and
+			// form degenerate, self-intersecting segments that trigger a false self-collision death.
+			const last = this.#freeformTrail[this.#freeformTrail.length - 1];
+			if (!last || last.distanceTo(this.#currentPosition) > 0.2) {
+				this.#freeformTrail.push(this.#currentPosition.clone());
+			}
+			// Anti-grief: an excursion that never returns is capped; exceeding it kills the player.
+			if (this.#freeformTrail.length > FREEFORM_MAX_TRAIL_POINTS_HARD) {
+				this.killBySelfTrail();
+			}
+		} else if (this.#freeformTrail.length > 0) {
+			this.#freeformTrail = [];
+		}
+
+		this.#insideOwnTerritory = inside;
+	}
+
+	/**
+	 * Closes the current trail into the player's territory and applies the resulting area
+	 * (and any stolen area) to the affected players' scores.
+	 */
+	#captureFreeformTrail() {
+		const trailTiles = this.#freeformTrail.map((v) => ({ x: v.x, y: v.y }));
+		this.#captureInFlight = true;
+		this.#freeformTrail = []; // the loop is consumed; freeze the trail until the worker result lands
+		this.game.territory.requestCapture(this.id, trailTiles);
+	}
+
+	/**
+	 * Applies a new captured area to this player's score. Called when a capture result arrives
+	 * (for the capturing player and for anyone whose land was stolen).
+	 * @param {number} area
+	 */
+	applyCapturedArea(area) {
+		this.#setCapturedTileCount(area);
+	}
+
+	/**
+	 * Called when this player's own capture result has been applied to the territory mirror. The
+	 * head is now inside the freshly enlarged territory, so resume the lifecycle from "inside".
+	 */
+	onCaptureResolved() {
+		this.#captureInFlight = false;
+		this.#insideOwnTerritory = true;
+		this.#freeformTrail = [];
+	}
+
+	get freeformTrailLength() {
+		return this.#freeformTrail.length;
+	}
+
+	/**
+	 * Yields each segment of the continuous trail as a plain object, tagged with this player
+	 * and the segment index, ready to be inserted into the collision spatial hash.
+	 */
+	*getFreeformTrailSegments() {
+		for (let i = 0; i < this.#freeformTrail.length - 1; i++) {
+			const a = this.#freeformTrail[i];
+			const b = this.#freeformTrail[i + 1];
+			yield { player: this, ax: a.x, ay: a.y, bx: b.x, by: b.y, index: i };
+		}
+	}
+
+	/**
+	 * Returns the most recent trail segment (the head), or null if the trail is too short.
+	 * @returns {{ax: number, ay: number, bx: number, by: number} | null}
+	 */
+	getFreeformHeadSegment() {
+		const n = this.#freeformTrail.length;
+		if (n < 2) return null;
+		const a = this.#freeformTrail[n - 2];
+		const b = this.#freeformTrail[n - 1];
+		return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+	}
+
+	/**
+	 * This player's head crossed `victim`'s trail, cutting it. The victim dies and this
+	 * player is credited with the kill.
+	 * @param {Player} victim
+	 */
+	killByTrailCut(victim) {
+		const success = this.#killPlayer(victim, "player");
+		if (success) this.game.broadcastHitLineAnimation(victim, this);
+	}
+
+	/**
+	 * This player's head crossed their own trail.
+	 */
+	killBySelfTrail() {
+		const success = this.#killPlayer(this, "self");
+		if (success) this.game.broadcastHitLineAnimation(this, this);
+	}
+
+	/**
+	 * Rotates `#heading` towards `#targetHeading` by at most PLAYER_TURN_RATE * dt,
+	 * taking the shortest angular direction. Keeps the result normalised to [0, 2π).
+	 * @param {number} dt
+	 */
+	#advanceHeading(dt) {
+		const maxDelta = PLAYER_TURN_RATE * dt;
+		// Shortest signed angular difference, mapped into (-π, π].
+		let diff = ((this.#targetHeading - this.#heading + Math.PI) % TAU + TAU) % TAU - Math.PI;
+		if (Math.abs(diff) <= maxDelta) {
+			this.#heading = this.#targetHeading;
+		} else {
+			this.#heading += Math.sign(diff) * maxDelta;
+		}
+		this.#heading = ((this.#heading % TAU) + TAU) % TAU;
+	}
+
+	/**
 	 * @param {number} now
 	 * @param {number} dt
 	 */
 	loop(now, dt) {
-		if (this.currentDirection != "paused" && !this.dead) {
-			this.#nextTileProgress += dt * PLAYER_TRAVEL_SPEED;
-			if (this.#nextTileProgress > 1) {
-				this.#nextTileProgress -= 1;
+		if (!this.dead) {
+			// Steer the heading towards the client's requested target, clamped by the turn rate,
+			// then advance the position continuously along the (new) heading.
+			const prevX = this.#currentPosition.x;
+			const prevY = this.#currentPosition.y;
+			this.#advanceHeading(dt);
+			const distance = dt * PLAYER_TRAVEL_SPEED;
+			this.#currentPosition.x += Math.cos(this.#heading) * distance;
+			this.#currentPosition.y += Math.sin(this.#heading) * distance;
+			// The outer world border is a sliding wall, not death: clamp to the arena interior so the
+			// player skims along the edge instead of dying when they reach it.
+			const m = 0.5;
+			this.#currentPosition.x = Math.max(m, Math.min(this.game.arena.width - 1 - m, this.#currentPosition.x));
+			this.#currentPosition.y = Math.max(m, Math.min(this.game.arena.height - 1 - m, this.#currentPosition.y));
+			this.#updateFreeformTrail(prevX, prevY);
 
-				const previousPosition = this.#currentPosition.clone();
-				if (this.currentDirection == "left") {
-					this.#currentPosition.x -= 1;
-				} else if (this.currentDirection == "right") {
-					this.#currentPosition.x += 1;
-				} else if (this.currentDirection == "up") {
-					this.#currentPosition.y -= 1;
-				} else if (this.currentDirection == "down") {
-					this.#currentPosition.y += 1;
-				}
-
-				try {
-					if (!this.isSpectator) {
-						this.#updateCurrentTile(previousPosition);
-					}
-					this.#currentPositionChanged();
-					this.#drainMovementQueue();
-				} catch (e) {
-					console.error(e);
-					if (this.game.gameMode != "arena") {
-						this.#connection.close();
-					}
+			try {
+				this.game.broadcastPlayerState(this);
+				this.#currentPositionChanged();
+			} catch (e) {
+				console.error(e);
+				if (this.game.gameMode != "arena") {
+					this.#connection.close();
 				}
 			}
 		}
@@ -764,45 +734,18 @@ export class Player {
 			}
 		}
 
-		// Check if we are touching the edge of the map or the pit border.
-		if (
-			this.#currentPosition.x <= 0 || this.#currentPosition.y <= 0 ||
-			this.#currentPosition.x >= this.game.arena.width - 1 ||
-			this.#currentPosition.y >= this.game.arena.height - 1 ||
-			(this.game.gameMode == "arena" && this.game.arena.getTileValue(this.#currentPosition) === -1)
-		) {
-			this.#killPlayer(this, "arena-bounds");
-		}
-
-		// Check if we are touching someone's trail.
-		for (const player of this.game.getOverlappingTrailBoundsPlayersForPos(this.#currentPosition)) {
-			const includeLastSegments = player != this;
-			if (player.pointIsInTrail(this.#currentPosition, { includeLastSegments })) {
-				const killedSelf = player == this;
-				if (player.dead || player.isSpectator || this.isSpectator) continue;
-
-				if (this.game.gameMode != "drawing") {
-					if (player.isGeneratingTrail || player.#currentDirection == "paused") {
-						const success = this.#killPlayer(player, killedSelf ? "self" : "player");
-						if (success) {
-							this.game.broadcastHitLineAnimation(player, this);
-						}
-					}
-
-					if (
-						!killedSelf &&
-						player.#currentPosition.x == this.#currentPosition.x &&
-						player.#currentPosition.y == this.#currentPosition.y &&
-						this.isGeneratingTrail && player.isGeneratingTrail
-					) {
-						const success = player.#killPlayer(this, "player");
-						if (success) {
-							this.game.broadcastHitLineAnimation(this, player);
-						}
-					}
-				}
+		// The outer world border no longer kills (the player is clamped to it in loop() and slides
+		// along it). In arena mode the central pit border is still lethal.
+		if (!this.isSpectator && this.game.gameMode == "arena") {
+			const tileX = Math.floor(this.#currentPosition.x);
+			const tileY = Math.floor(this.#currentPosition.y);
+			if (this.game.arena.getTileValue(new Vec2(tileX, tileY)) === -1) {
+				this.#killPlayer(this, "arena-bounds");
 			}
 		}
+
+		// Trail-vs-trail collision is reintroduced as continuous segment intersection in the
+		// continuous-collision milestone; the old integer point-in-trail check is removed here.
 
 		// Send new sections of the map when needed.
 		this.#sendRequiredEdgeChunks();
@@ -831,6 +774,7 @@ export class Player {
 			this.#connection.send(playerDeadMessage);
 		}
 		player.sendTrailToPlayer(this);
+		player.sendTerritoryToPlayer(this);
 	}
 
 	/**
@@ -956,6 +900,8 @@ export class Player {
 			type: deathType,
 			killerName,
 		};
+		// Clear the continuous trail so a dead player's trail can no longer cut anyone.
+		this.#freeformTrail = [];
 		this.game.broadcastPlayerDeath(this);
 	}
 
@@ -1018,6 +964,7 @@ export class Player {
 		if (this.#allMyTilesCleared || this.#isSpectator) return;
 		this.#allMyTilesCleared = true;
 		this.game.arena.clearAllPlayerTiles(this.id);
+		this.game.territory.remove(this.id);
 	}
 
 	/**

@@ -1,7 +1,16 @@
 import { clamp, Vec2 } from "renda";
-import { VALID_PLAYER_NAME_LENGTH, VALID_SKIN_COLOR_RANGE, VALID_SKIN_PATTERN_RANGE } from "./config.js";
+import {
+	POSITION_NETWORK_SCALE,
+	TERRITORY_NETWORK_SIMPLIFY_EPS,
+	VALID_PLAYER_NAME_LENGTH,
+	VALID_SKIN_COLOR_RANGE,
+	VALID_SKIN_PATTERN_RANGE,
+} from "./config.js";
 import { Player } from "./gameplay/Player.js";
 import { ControlSocketConnection } from "./ControlSocketConnection.js";
+import { simplifyMultiPolygon } from "./util/geometry.js";
+
+const TAU = Math.PI * 2;
 
 /**
  * - `"add-segment"` - adds a new polygon to the current trail.
@@ -149,15 +158,22 @@ export class WebSocketConnection {
 			UNDO_PLAYER_DIE: 22,
 			TEAM_LIFE_COUNT: 23,
 			PLAYER_IS_SPECTATOR: 24,
+			/**
+			 * Freeform conversion: sends a player's polygon territory (all rings) so the client can
+			 * fill it. Replaces the tile-based FILL_RECT / CHUNK_OF_BLOCKS rendering path.
+			 */
+			SET_PLAYER_TERRITORY: 25,
 		};
 	}
 
 	static get ReceiveAction() {
 		return {
 			/**
-			 * The client changed their position and direction.
+			 * The client changed their desired heading (freeform movement). Payload is a single
+			 * Uint16 mapping [0, 65536) to [0, 2π). The server owns position; it only steers
+			 * the heading towards this target, so this is purely an input request.
 			 */
-			UPDATE_MY_POS: 1,
+			UPDATE_MY_HEADING: 1,
 			/**
 			 * Sets the name of the player that will be created.
 			 * If this is sent after the player has been created, the message is ignored.
@@ -305,32 +321,12 @@ export class WebSocketConnection {
 		} else if (messageType == WebSocketConnection.ReceiveAction.PING) {
 			this.#lastPingTime = performance.now();
 			this.#sendPong();
-		} else if (messageType == WebSocketConnection.ReceiveAction.UPDATE_MY_POS) {
-			if (view.byteLength < 6) return;
+		} else if (messageType == WebSocketConnection.ReceiveAction.UPDATE_MY_HEADING) {
+			if (view.byteLength < 3) return;
 			if (!this.#player) return;
-			let cursor = 1;
-			const newDir = view.getInt8(cursor);
-			cursor++;
-			const x = view.getUint16(cursor, false);
-			cursor += 2;
-			const y = view.getUint16(cursor, false);
-			cursor += 2;
-			/** @type {import("./gameplay/Player.js").Direction} */
-			let direction;
-			if (newDir == 0) {
-				direction = "right";
-			} else if (newDir == 1) {
-				direction = "down";
-			} else if (newDir == 2) {
-				direction = "left";
-			} else if (newDir == 3) {
-				direction = "up";
-			} else if (newDir == 4) {
-				direction = "paused";
-			} else {
-				return;
-			}
-			this.#player.clientPosUpdateRequested(direction, new Vec2(x, y));
+			const rawHeading = view.getUint16(1, false);
+			const heading = (rawHeading / 65536) * TAU;
+			this.#player.clientHeadingUpdateRequested(heading);
 		} else if (messageType == WebSocketConnection.ReceiveAction.REQUEST_MY_TRAIL) {
 			if (!this.#player) return;
 			const message = WebSocketConnection.createTrailMessage(0, Array.from(this.#player.getTrailVertices()));
@@ -448,44 +444,30 @@ export class WebSocketConnection {
 	}
 
 	/**
-	 * Sends the position and direction of a player, optionally modifying the trail of the player.
+	 * Sends the continuous position and heading of a player.
+	 * Position is sent as fixed-point Uint32 (tile units * POSITION_NETWORK_SCALE) so the client
+	 * gets sub-tile precision; heading is a Uint16 mapping [0, 65536) to [0, 2π).
 	 *
-	 * @param {number} x
-	 * @param {number} y
+	 * @param {number} x Position x in tile units (float).
+	 * @param {number} y Position y in tile units (float).
 	 * @param {number} playerId
-	 * @param {import("./gameplay/Player.js").Direction} dir
+	 * @param {number} heading Heading in radians.
 	 */
-	sendPlayerState(x, y, playerId, dir) {
-		const buffer = new ArrayBuffer(9);
+	sendPlayerState(x, y, playerId, heading) {
+		const buffer = new ArrayBuffer(13);
 		const view = new DataView(buffer);
 		let cursor = 0;
 		view.setUint8(cursor, WebSocketConnection.SendAction.PLAYER_STATE);
 		cursor++;
-		view.setUint16(cursor, Math.round(x), false);
-		cursor += 2;
-		view.setUint16(cursor, Math.round(y), false);
-		cursor += 2;
+		view.setUint32(cursor, Math.max(0, Math.round(x * POSITION_NETWORK_SCALE)), false);
+		cursor += 4;
+		view.setUint32(cursor, Math.max(0, Math.round(y * POSITION_NETWORK_SCALE)), false);
+		cursor += 4;
 		view.setUint16(cursor, playerId, false);
 		cursor += 2;
-		let dirNumber = 0;
-		if (dir == "right") {
-			dirNumber = 0;
-		} else if (dir == "down") {
-			dirNumber = 1;
-		} else if (dir == "left") {
-			dirNumber = 2;
-		} else if (dir == "up") {
-			dirNumber = 3;
-		} else if (dir == "paused") {
-			dirNumber = 4;
-		}
-		view.setUint8(cursor, dirNumber);
-		cursor++;
-
-		// This is legacy behaviour. The client already seems to ignore this flag when the player doesn't
-		// currently have a trail. So we'll just always set this flag.
-		view.setUint8(cursor, 1);
-		cursor++;
+		const normalizedHeading = ((heading % TAU) + TAU) % TAU;
+		view.setUint16(cursor, Math.round((normalizedHeading / TAU) * 65536) & 0xFFFF, false);
+		cursor += 2;
 
 		this.send(buffer);
 	}
@@ -619,6 +601,50 @@ export class WebSocketConnection {
 			cursor += 2;
 			view.setUint16(cursor, vertex.y, false);
 			cursor += 2;
+		}
+		return buffer;
+	}
+
+	/**
+	 * Encodes a player's polygon territory. All rings (outer rings and holes) are sent flat; the
+	 * client fills them with the even-odd rule so holes render correctly regardless of winding.
+	 * Territory is stored in sub-units (tile * TERRITORY_SUBUNIT_SCALE = 1024); coordinates are
+	 * converted to the same tile*256 fixed-point used by positions (sub-unit / 4) and sent as u32.
+	 *
+	 * Layout: [type, playerId:u16, ringCount:u16, (vertCount:u16, (x:u32, y:u32) * vertCount) * ringCount]
+	 * @param {number} playerId
+	 * @param {number[][][][] | undefined} multiPolygon
+	 */
+	static createTerritoryMessage(playerId, multiPolygon) {
+		/** @type {number[][][]} */
+		const rings = [];
+		if (multiPolygon) {
+			const simplified = simplifyMultiPolygon(multiPolygon, TERRITORY_NETWORK_SIMPLIFY_EPS);
+			for (const poly of simplified) {
+				for (const ring of poly) rings.push(ring);
+			}
+		}
+
+		let size = 5;
+		for (const ring of rings) size += 2 + ring.length * 8;
+		const buffer = new ArrayBuffer(size);
+		const view = new DataView(buffer);
+		let cursor = 0;
+		view.setUint8(cursor, WebSocketConnection.SendAction.SET_PLAYER_TERRITORY);
+		cursor++;
+		view.setUint16(cursor, playerId, false);
+		cursor += 2;
+		view.setUint16(cursor, rings.length, false);
+		cursor += 2;
+		for (const ring of rings) {
+			view.setUint16(cursor, ring.length, false);
+			cursor += 2;
+			for (const point of ring) {
+				view.setUint32(cursor, Math.max(0, Math.round(point[0] / 4)), false);
+				cursor += 4;
+				view.setUint32(cursor, Math.max(0, Math.round(point[1] / 4)), false);
+				cursor += 4;
+			}
 		}
 		return buffer;
 	}

@@ -167,6 +167,12 @@ export class Arena {
 	 */
 	getChunk(rect, convertTileDataCb) {
 		rect = this.clampRect(rect);
+		// Player positions are continuous (float) now, but the tile array is integer-indexed.
+		// Snap the requested rect to whole tiles so compressTiles never indexes a fractional tile.
+		rect.min.x = Math.floor(rect.min.x);
+		rect.min.y = Math.floor(rect.min.y);
+		rect.max.x = Math.ceil(rect.max.x);
+		rect.max.y = Math.ceil(rect.max.y);
 		const width = rect.max.x - rect.min.x;
 		const height = rect.max.y - rect.min.y;
 		if (width <= 0 || height <= 0) return [];

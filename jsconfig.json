@@ -15,5 +15,8 @@
 		"serverManager/**/*.js",
 		"adminPanel/src/**/*.js",
 		"shared/**/*.js"
+	],
+	"exclude": [
+		"scripts/clippingHarness/**"
 	]
 }
