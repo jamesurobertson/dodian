@@ -535,7 +535,9 @@
 
 		<script>
 		// ------------------------------------------------------------------ config
-		var WS_URL = "ws://127.0.0.1:9999/";
+		// Connect to the game server on the same host that served this page (port 9999), so loading
+		// http://<host-ip>:8080 from any device on the network just works. Override with #ip=...
+		var WS_URL = "ws://" + (location.hostname || "127.0.0.1") + ":9999/";
 		var hashIp = location.hash.match(/ip=([^&]+)/);
 		if (hashIp) WS_URL = decodeURIComponent(hashIp[1]);
 
