@@ -1,7 +1,14 @@
 // @ts-ignore: npm module resolved via the import map; types are not in the generated deno set.
 import polygonClipping from "polygon-clipping";
-import { bbox, canonicalize, multiPolygonArea, pointInMultiPolygon, simplifyRing } from "../util/geometry.js";
-import { TERRITORY_CAPTURE_SIMPLIFY_EPS, TERRITORY_SUBUNIT_SCALE as SUB } from "../config.js";
+import {
+	bbox,
+	canonicalize,
+	multiPolygonArea,
+	outsetRingRound,
+	pointInMultiPolygon,
+	simplifyRing,
+} from "../util/geometry.js";
+import { TERRITORY_CAPTURE_OUTSET, TERRITORY_CAPTURE_SIMPLIFY_EPS, TERRITORY_SUBUNIT_SCALE as SUB } from "../config.js";
 
 /**
  * Pure polygon-territory operations, shared by the territory worker and unit tests. They operate
@@ -65,7 +72,8 @@ export function captureInto(territories, id, trailTiles) {
 	// Collapse the dense near-collinear vertices a continuous trail produces before clipping; this
 	// keeps the boolean-op input small and well-conditioned (defense against polygon-clipping hangs).
 	const simplified = simplifyRing(ring, TERRITORY_CAPTURE_SIMPLIFY_EPS);
-	const loop = [[simplified]];
+	// Push the captured boundary out to the trail's outer edge and round its corners.
+	const loop = [[outsetRingRound(simplified, TERRITORY_CAPTURE_OUTSET)]];
 
 	let filled;
 	try {

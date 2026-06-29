@@ -275,6 +275,62 @@ export function simplifyMultiPolygon(mp, eps) {
 }
 
 /**
+ * Offsets a closed ring outward by `r` with rounded convex corners. The boundary is pushed out by r
+ * everywhere (so a captured trail loop reaches the OUTER edge of the drawn trail rather than its
+ * centerline), and convex corners are swept by short arcs so they read as fluid rather than sharp.
+ * Concave corners just emit both offset points and may self-intersect slightly — a following
+ * union()/canonicalize() resolves that. Winding-agnostic (uses the ring's own signed area).
+ * @param {Ring} ring
+ * @param {number} r offset distance in the ring's coordinate units (sub-units)
+ * @returns {Ring}
+ */
+export function outsetRingRound(ring, r) {
+	const n = ring.length;
+	if (n < 3 || r <= 0) return ring;
+	let area2 = 0;
+	for (let i = 0, j = n - 1; i < n; j = i++) {
+		area2 += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+	}
+	const ccw = area2 > 0;
+	const sign = ccw ? 1 : -1; // outward normal of edge (a->b) is sign*(ey,-ex)/len
+	/** @type {Ring} */
+	const out = [];
+	for (let i = 0; i < n; i++) {
+		const cur = ring[i], prev = ring[(i - 1 + n) % n], next = ring[(i + 1) % n];
+		const e1x = cur[0] - prev[0], e1y = cur[1] - prev[1];
+		const e2x = next[0] - cur[0], e2y = next[1] - cur[1];
+		const l1 = Math.sqrt(e1x * e1x + e1y * e1y), l2 = Math.sqrt(e2x * e2x + e2y * e2y);
+		if (l1 < 1e-9 || l2 < 1e-9) {
+			out.push([cur[0], cur[1]]);
+			continue;
+		}
+		const n1x = sign * (e1y / l1), n1y = sign * (-e1x / l1);
+		const n2x = sign * (e2y / l2), n2y = sign * (-e2x / l2);
+		const ax = cur[0] + n1x * r, ay = cur[1] + n1y * r; // end of the incoming edge's offset
+		const bx = cur[0] + n2x * r, by = cur[1] + n2y * r; // start of the outgoing edge's offset
+		const cross = e1x * e2y - e1y * e2x;
+		const convex = ccw ? cross > 0 : cross < 0;
+		if (convex) {
+			out.push([ax, ay]);
+			let a1 = Math.atan2(n1y, n1x), a2 = Math.atan2(n2y, n2x);
+			let da = a2 - a1;
+			while (da <= -Math.PI) da += 2 * Math.PI;
+			while (da > Math.PI) da -= 2 * Math.PI;
+			const steps = Math.max(1, Math.round(Math.abs(da) / (Math.PI / 6)));
+			for (let s = 1; s < steps; s++) {
+				const a = a1 + da * (s / steps);
+				out.push([cur[0] + Math.cos(a) * r, cur[1] + Math.sin(a) * r]);
+			}
+			out.push([bx, by]);
+		} else {
+			out.push([ax, ay]);
+			out.push([bx, by]);
+		}
+	}
+	return out;
+}
+
+/**
  * Snap one ring to the integer grid, drop duplicate + collinear vertices.
  * @param {Ring} ring
  * @returns {Ring | null}

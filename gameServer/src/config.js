@@ -113,7 +113,7 @@ export const SPAWN_TERRITORY_HALF_TILES = 3;
  * produces, cutting bandwidth and client render cost (large islands stream much smaller). The
  * authoritative geometry and score keep using the full-resolution polygon.
  */
-export const TERRITORY_NETWORK_SIMPLIFY_EPS = 160;
+export const TERRITORY_NETWORK_SIMPLIFY_EPS = 120;
 
 /**
  * Watchdog timeout (ms) for a single territory-worker capture. polygon-clipping can occasionally
@@ -132,6 +132,15 @@ export const TERRITORY_WORKER_CAPTURE_TIMEOUT_MS = 4000;
  * no visible change to the captured shape. Defense-in-depth alongside the worker watchdog.
  */
 export const TERRITORY_CAPTURE_SIMPLIFY_EPS = 64;
+
+/**
+ * Distance (sub-units, ~0.37 tiles) the captured trail loop is offset OUTWARD before it's merged into
+ * territory, with convex corners rounded. The drawn trail is a thick rounded band; capturing the bare
+ * centerline would claim only to its inner edge, so we push the boundary out to roughly the trail's
+ * outer edge and round the corners. Applied to the authoritative geometry so steal/area stay
+ * consistent and neighbours line up (it claims a thin sliver at shared borders).
+ */
+export const TERRITORY_CAPTURE_OUTSET = 380;
 
 /**
  * How long (ms) a dead player remains in the "dying" state before being permanently removed.
