@@ -88,20 +88,23 @@ export class Game {
 
 	/**
 	 * Nearest point on another player's cuttable trail within `range` tiles of `player`'s head, for
-	 * bot targeting. Skips itself, dead/spectator/spawn-protected players, and players with no trail
-	 * (a player inside their own territory can't be cut). Returns null if nothing is in range.
+	 * bot targeting. Skips itself, dead/spectator/spawn-protected players, players with no trail (a
+	 * player inside their own territory can't be cut), and — for positional advantage — any enemy
+	 * whose trail is not longer than `minOwnerTrailLen` (i.e. only hunt enemies more exposed than
+	 * the caller). Returns null if nothing qualifies.
 	 * @param {import("./Player.js").Player} player
 	 * @param {number} range
+	 * @param {number} minOwnerTrailLen
 	 * @returns {{x: number, y: number} | null}
 	 */
-	findCuttableTrailPointNear(player, range) {
+	findCuttableTrailPointNear(player, range, minOwnerTrailLen) {
 		const pos = player.getPosition();
 		let bestD2 = range * range;
 		/** @type {{x: number, y: number} | null} */
 		let best = null;
 		for (const other of this.#players.values()) {
 			if (other === player || other.dead || other.isSpectator || other.isSpawnProtected) continue;
-			if (other.freeformTrailLength < 2) continue;
+			if (other.freeformTrailLength < 2 || other.freeformTrailLength <= minOwnerTrailLen) continue;
 			for (const seg of other.getFreeformTrailSegments()) {
 				const dx = seg.ax - pos.x, dy = seg.ay - pos.y;
 				const d2 = dx * dx + dy * dy;
