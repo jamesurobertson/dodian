@@ -28,9 +28,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y curl git unzip debian-keyring debian-archive-keyring apt-transport-https gnupg
 
-# Deno (system-wide)
-curl -fsSL https://deno.land/install.sh | sh
-install -m 0755 /root/.deno/bin/deno /usr/local/bin/deno
+# Deno (system-wide). DENO_INSTALL pins the target dir so deno lands in /usr/local/bin
+# regardless of $HOME — cloud-init runs with HOME unset, which otherwise drops it in /.deno.
+curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 
 # Caddy
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' |
