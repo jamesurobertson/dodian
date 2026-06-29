@@ -547,9 +547,15 @@
 		<div id="dead" class="overlay hidden">
 			<div class="eyebrow">Run ended</div>
 			<h1 class="wordmark" style="font-size:clamp(40px,8vw,92px)">Eliminated</h1>
-			<div style="margin-top:38px">
-				<div class="stat-label">Territory claimed</div>
-				<div class="stat-num" id="deadscore">0</div>
+			<div style="margin-top:38px;display:flex;gap:clamp(30px,9vw,64px);justify-content:center">
+				<div>
+					<div class="stat-label">Territory claimed</div>
+					<div class="stat-num" id="deadscore">0</div>
+				</div>
+				<div>
+					<div class="stat-label">Eliminations</div>
+					<div class="stat-num" id="deadkills" style="color:var(--chalk)">0</div>
+				</div>
 			</div>
 			<div class="row"><button id="again" class="cta">Play again</button></div>
 		</div>
@@ -836,6 +842,7 @@
 			deathFlash();
 			sndDeath();
 			document.getElementById("deadscore").textContent = myScore;
+			document.getElementById("deadkills").textContent = myKills;
 			deadEl.classList.remove("hidden");
 			hud.classList.add("hidden");
 			lb.classList.add("hidden");
