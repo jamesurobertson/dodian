@@ -14,6 +14,7 @@ After=network.target
 Type=simple
 User=dodian
 WorkingDirectory=/opt/dodian
+Environment=DENO_DIR=/opt/dodian/.deno
 ExecStart=/usr/local/bin/deno run -A gameServer/src/mainInstance.js -p 8080 --hostname 127.0.0.1 -s 600 --bots 15
 Restart=always
 RestartSec=2

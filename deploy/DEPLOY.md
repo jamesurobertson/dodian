@@ -8,6 +8,20 @@ browser ──https──> Caddy (dodian.org) ──┬── static client  (cl
                                          └── /ws ──> game server (127.0.0.1:8080)
 ```
 
+## Fast path: automated startup script
+Instead of steps 2–5 below, you can have the droplet set itself up on first boot:
+1. Push this repo to GitHub (the droplet must be able to `git clone` it — public repo,
+   or a token in the URL for a private one).
+2. Edit `deploy/cloud-init.sh` (`DOMAIN`, `REPO_URL`, `BRANCH`).
+3. When creating the DigitalOcean droplet, paste the whole edited file into the
+   **"User data"** field (Advanced options).
+4. Boot the droplet, then point the `dodian.org` **A record** at its IP. Caddy keeps
+   retrying TLS and goes live within a minute of DNS resolving.
+
+Watch progress on the box with: `tail -f /var/log/dodian-setup.log`.
+
+The manual steps below do the same thing by hand.
+
 ## 1. Point the domain at a box
 - Get a VPS (Hetzner / DigitalOcean / etc.), Ubuntu 22.04+.
 - In your DNS for **dodian.org**, add an **A record** -> the VPS's public IP
