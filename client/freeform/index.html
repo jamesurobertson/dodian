@@ -1128,46 +1128,13 @@
 			function sy(t) {
 				return (t - camY) * TILE_PX + cy;
 			}
-			// Traces a closed ring into the current path with rounded corners. Edges stay straight and
-			// exactly on the polygon; only CONVEX corners are filleted (they round inward, staying inside
-			// the polygon). Concave corners are left sharp — filleting them would bulge the curve OUTSIDE
-			// the polygon and into a neighbouring territory. So the rendered shape is always a subset of
-			// the real polygon: borders look fluid but never spill into anyone else's land. Purely visual.
-			var CORNER_RADIUS = 0.6; // tiles
+			// Traces a closed ring with straight segments (exactly the polygon). Fluidity comes from the
+			// border following the player's curved trail path — see TERRITORY_NETWORK_SIMPLIFY_EPS on the
+			// server — not from client-side corner rounding, which can't smooth two adjacent territories'
+			// shared edge consistently without seam artifacts.
 			function traceSmoothRing(ring) {
-				var n = ring.length;
-				if (n < 3) {
-					ctx.moveTo(sx(ring[0][0]), sy(ring[0][1]));
-					for (var k = 1; k < n; k++) ctx.lineTo(sx(ring[k][0]), sy(ring[k][1]));
-					ctx.closePath();
-					return;
-				}
-				// Ring winding (shoelace): positive area = counter-clockwise. Convexity is relative to it.
-				var area2 = 0;
-				for (var a = 0, b = n - 1; a < n; b = a++) {
-					area2 += ring[b][0] * ring[a][1] - ring[a][0] * ring[b][1];
-				}
-				var ccw = area2 > 0;
-				for (var i = 0; i < n; i++) {
-					var prev = ring[(i - 1 + n) % n], cur = ring[i], nxt = ring[(i + 1) % n];
-					var p1x = prev[0] - cur[0], p1y = prev[1] - cur[1];
-					var p2x = nxt[0] - cur[0], p2y = nxt[1] - cur[1];
-					var d1 = Math.sqrt(p1x * p1x + p1y * p1y), d2 = Math.sqrt(p2x * p2x + p2y * p2y);
-					var cross = (cur[0] - prev[0]) * (nxt[1] - cur[1]) - (cur[1] - prev[1]) * (nxt[0] - cur[0]);
-					var convex = ccw ? cross > 0 : cross < 0;
-					if (!convex || d1 < 1e-6 || d2 < 1e-6) {
-						// Concave / degenerate: keep the sharp vertex, exactly on the polygon.
-						if (i === 0) ctx.moveTo(sx(cur[0]), sy(cur[1]));
-						else ctx.lineTo(sx(cur[0]), sy(cur[1]));
-						continue;
-					}
-					var r = Math.min(CORNER_RADIUS, d1 * 0.5, d2 * 0.5);
-					var ex = cur[0] + (p1x / d1) * r, ey = cur[1] + (p1y / d1) * r; // fillet entry (toward prev)
-					var fx = cur[0] + (p2x / d2) * r, fy = cur[1] + (p2y / d2) * r; // fillet exit (toward next)
-					if (i === 0) ctx.moveTo(sx(ex), sy(ey));
-					else ctx.lineTo(sx(ex), sy(ey));
-					ctx.quadraticCurveTo(sx(cur[0]), sy(cur[1]), sx(fx), sy(fy));
-				}
+				ctx.moveTo(sx(ring[0][0]), sy(ring[0][1]));
+				for (var k = 1; k < ring.length; k++) ctx.lineTo(sx(ring[k][0]), sy(ring[k][1]));
 				ctx.closePath();
 			}
 

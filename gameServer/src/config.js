@@ -109,11 +109,12 @@ export const SPAWN_TERRITORY_HALF_TILES = 3;
 
 /**
  * Douglas-Peucker epsilon (in territory sub-units) applied to territory polygons before sending
- * them to clients. ~0.16 tiles: collapses the many near-collinear vertices a continuous capture
- * loop produces, cutting bandwidth and client render cost with no visible change. The authoritative
- * geometry and score keep using the full-resolution polygon.
+ * them to clients. ~0.05 tiles: collapses only truly redundant near-collinear vertices while
+ * preserving the natural curve of the player's trail, so borders render fluid (the client draws the
+ * polygon straight — fluidity comes from this fidelity, not corner rounding). Larger values look
+ * more angular and cut bandwidth; the authoritative geometry and score keep the full-res polygon.
  */
-export const TERRITORY_NETWORK_SIMPLIFY_EPS = 160;
+export const TERRITORY_NETWORK_SIMPLIFY_EPS = 50;
 
 /**
  * Watchdog timeout (ms) for a single territory-worker capture. polygon-clipping can occasionally
