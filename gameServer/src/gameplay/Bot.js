@@ -13,7 +13,9 @@ const AVOID_OFFSETS = [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95, 1.35, -1.35, 1.85, 
 // Aggression: how far (tiles) a bot will spot an enemy's trail, and the trail-length (≈ how far out
 // it already is) thresholds that gate aggression vs. caution. Below AGGRO it hunts; past SAFETY it
 // always heads home to bank rather than risk getting cut while over-extended.
-const BOT_SIGHT_RANGE = 26;
+// Keep this within the player's on-screen radius (~11–16 tiles) so bots only start hunting once
+// they're actually visible — engaging from farther away makes them swarm in from off-screen.
+const BOT_SIGHT_RANGE = 12;
 const BOT_AGGRO_MAX_TRAIL = 200;
 const BOT_SAFETY_MAX_TRAIL = 280;
 
