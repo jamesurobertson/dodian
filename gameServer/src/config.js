@@ -108,6 +108,13 @@ export const TERRITORY_SUBUNIT_SCALE = 1024;
 export const SPAWN_TERRITORY_HALF_TILES = 3;
 
 /**
+ * Extra clear margin (tiles) required around a new player's spawn square: their spawn area plus this
+ * margin must not overlap any existing player's territory, so you never spawn inside or touching
+ * someone else's island.
+ */
+export const SPAWN_CLEARANCE_TILES = 3;
+
+/**
  * Douglas-Peucker epsilon (in territory sub-units) applied to territory polygons before sending
  * them to clients. ~0.16 tiles: collapses the many near-collinear vertices a continuous capture loop
  * produces, cutting bandwidth and client render cost (large islands stream much smaller). The

@@ -13,6 +13,8 @@ import {
 	PLAYER_SPAWN_RADIUS,
 	REQUIRED_PLAYER_COUNT_FOR_GLOBAL_LEADERBOARD,
 	SPAWN_CANDIDATE_COUNT,
+	SPAWN_CLEARANCE_TILES,
+	SPAWN_TERRITORY_HALF_TILES,
 	TRAIL_HASH_CELL_SIZE,
 } from "../config.js";
 import { ApplicationLoop } from "../ApplicationLoop.js";
@@ -296,18 +298,23 @@ export class Game {
 			return new Vec2(tempX, tempY);
 		};
 
-		// Sample several candidates and keep the one farthest from any existing player, so a new
-		// player doesn't spawn right on top of (or inside the territory of) someone they can't see.
+		// Sample several candidates. Prefer ones whose spawn square is CLEAR of every existing
+		// territory (so you never spawn inside or touching someone's island); among equally-clear
+		// candidates keep the farthest from any player. Falls back to best-effort if the map is so
+		// packed that nothing is clear.
 		let position = randomCandidate();
 		let bestDist = -1;
+		let bestClear = false;
 		for (let i = 0; i < SPAWN_CANDIDATE_COUNT; i++) {
 			const candidate = randomCandidate();
+			const clear = this.#spawnAreaIsClear(candidate.x, candidate.y);
 			let minDist = Infinity;
 			for (const player of this.#players.values()) {
 				if (player.isSpectator || player.permanentlyDead) continue;
 				minDist = Math.min(minDist, candidate.distanceTo(player.getPosition()));
 			}
-			if (minDist > bestDist) {
+			if ((clear && !bestClear) || (clear === bestClear && minDist > bestDist)) {
+				bestClear = clear;
 				bestDist = minDist;
 				position = candidate;
 			}
@@ -320,6 +327,32 @@ export class Game {
 			this.#arenaWidth / 2 - position.x,
 		);
 		return { position, heading };
+	}
+
+	/**
+	 * True if a spawn square centred at (cx, cy), grown by the clearance margin, overlaps no existing
+	 * player's territory — i.e. spawning here wouldn't land inside or touching someone's island.
+	 * @param {number} cx
+	 * @param {number} cy
+	 * @returns {boolean}
+	 */
+	#spawnAreaIsClear(cx, cy) {
+		const reach = SPAWN_TERRITORY_HALF_TILES + SPAWN_CLEARANCE_TILES;
+		const minX = cx - reach, maxX = cx + reach, minY = cy - reach, maxY = cy + reach;
+		for (const player of this.#players.values()) {
+			if (player.isSpectator || player.permanentlyDead) continue;
+			const b = this.#territory.getBoundsTiles(player.id);
+			if (!b) continue;
+			// Bounding-box quick reject: territories that can't reach the spawn box are fine.
+			if (b.maxX < minX || b.minX > maxX || b.maxY < minY || b.minY > maxY) continue;
+			// Sample the spawn box on a fine grid; if any point sits in their territory, it's not clear.
+			for (let y = minY; y <= maxY; y += 1) {
+				for (let x = minX; x <= maxX; x += 1) {
+					if (this.#territory.isInside(player.id, x, y)) return false;
+				}
+			}
+		}
+		return true;
 	}
 
 	/**
