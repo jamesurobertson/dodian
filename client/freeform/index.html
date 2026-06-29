@@ -341,6 +341,14 @@
 			text-transform: uppercase;
 			margin-bottom: 6px;
 		}
+		.dead-reason {
+			font-family: var(--mono);
+			font-size: 13px;
+			line-height: 1.5;
+			color: var(--signal);
+			max-width: 34ch;
+			margin: 14px auto 0;
+		}
 		.stat-num {
 			font-family: var(--display);
 			font-weight: 700;
@@ -545,8 +553,9 @@
 		</div>
 
 		<div id="dead" class="overlay hidden">
-			<div class="eyebrow">Run ended</div>
-			<h1 class="wordmark" style="font-size:clamp(40px,8vw,92px)">Eliminated</h1>
+			<div class="eyebrow" id="deadeyebrow">Run ended</div>
+			<h1 class="wordmark" id="deadtitle" style="font-size:clamp(40px,8vw,92px)">Eliminated</h1>
+			<div id="deadreason" class="dead-reason hidden"></div>
 			<div style="margin-top:38px;display:flex;gap:clamp(30px,9vw,64px);justify-content:center">
 				<div>
 					<div class="stat-label">Territory claimed</div>
@@ -837,10 +846,22 @@
 			});
 		}
 
-		function die() {
+		function die(deathType) {
 			screenState = "dead";
 			deathFlash();
 			sndDeath();
+			// deathType 4 = "enclosed": someone captured your entire island. Show a distinct screen so
+			// it's clearly a real elimination, not a glitch.
+			var enclosed = deathType === 4;
+			document.getElementById("deadeyebrow").textContent = enclosed ? "Territory lost" : "Run ended";
+			document.getElementById("deadtitle").textContent = enclosed ? "Enclosed" : "Eliminated";
+			var reasonEl = document.getElementById("deadreason");
+			if (enclosed) {
+				reasonEl.textContent = "A rival captured your entire island. Not a bug — you were enclosed.";
+				reasonEl.classList.remove("hidden");
+			} else {
+				reasonEl.classList.add("hidden");
+			}
 			document.getElementById("deadscore").textContent = myScore;
 			document.getElementById("deadkills").textContent = myKills;
 			deadEl.classList.remove("hidden");
@@ -925,7 +946,9 @@
 			} else if (type === S.PLAYER_DIE) {
 				var did = view.getUint16(1, false);
 				if (did === 0) {
-					die();
+					// Own death. The death-type byte is the last byte (self message carries no position).
+					var dt = view.byteLength > 3 ? view.getUint8(view.byteLength - 1) : 0;
+					die(dt);
 					return;
 				}
 				if (players[did]) {

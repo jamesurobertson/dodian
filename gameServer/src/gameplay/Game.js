@@ -137,14 +137,18 @@ export class Game {
 		// When a capture's worker result arrives, apply the new area + broadcast territory for every
 		// affected player, and let the capturing player resume its trail lifecycle.
 		this.#territory.onCaptureResolved((capturerId, affected) => {
+			const capturer = this.#players.get(capturerId);
 			for (const a of affected) {
 				const p = this.#players.get(a.id);
-				if (p) {
-					p.applyCapturedArea(a.area);
-					this.broadcastPlayerTerritory(p);
+				if (!p) continue;
+				p.applyCapturedArea(a.area);
+				this.broadcastPlayerTerritory(p);
+				// A non-capturer left with no rings at all has had their whole island captured:
+				// eliminate them and credit the capturer (this is "circle someone's island to kill").
+				if (capturer && p !== capturer && a.rings.length === 0 && !p.dead) {
+					capturer.killByEnclosure(p);
 				}
 			}
-			const capturer = this.#players.get(capturerId);
 			if (capturer) capturer.onCaptureResolved();
 		});
 
@@ -540,14 +544,15 @@ export class Game {
 	 */
 	broadcastPlayerDeath(player) {
 		const position = player.getPosition();
-		const message = WebSocketConnection.createPlayerDieMessage(player.id, position);
+		const deathTypeInt = WebSocketConnection.deathTypeToInt(player.deathType);
+		const message = WebSocketConnection.createPlayerDieMessage(player.id, position, deathTypeInt);
 		for (const nearbyPlayer of player.inOtherPlayerViewports()) {
 			if (nearbyPlayer == player) {
 				// The client that owns the player should receive 0 as player id
 				// We don't want to send the current position of the player either, the client already
 				// keeps track of the location where the player died, and if we do send the position,
 				// it might cause issues later when the death is undone.
-				const samePlayerMessage = WebSocketConnection.createPlayerDieMessage(0, null);
+				const samePlayerMessage = WebSocketConnection.createPlayerDieMessage(0, null, deathTypeInt);
 				nearbyPlayer.connection.send(samePlayerMessage);
 			} else {
 				nearbyPlayer.connection.send(message);

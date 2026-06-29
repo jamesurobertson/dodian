@@ -28,7 +28,7 @@ const TAU = Math.PI * 2;
  * @typedef {Exclude<Direction, "paused">} UnpausedDirection
  */
 
-/** @typedef {"player" | "arena-bounds" | "self"} DeathType */
+/** @typedef {"player" | "arena-bounds" | "self" | "enclosed"} DeathType */
 
 /**
  * @typedef SkinData
@@ -512,6 +512,20 @@ export class Player {
 	}
 
 	/**
+	 * This player captured `victim`'s entire territory, leaving them with no land at all. The
+	 * victim is eliminated and this player is credited with the kill.
+	 * @param {Player} victim
+	 */
+	killByEnclosure(victim) {
+		return this.#killPlayer(victim, "enclosed");
+	}
+
+	/** The reason this player last died, or null if alive. */
+	get deathType() {
+		return this.#lastDeathState ? this.#lastDeathState.type : null;
+	}
+
+	/**
 	 * Rotates `#heading` towards `#targetHeading` by at most PLAYER_TURN_RATE * dt,
 	 * taking the shortest angular direction. Keeps the result normalised to [0, 2π).
 	 * @param {number} dt
@@ -713,7 +727,9 @@ export class Player {
 			this.#getTimeAliveSeconds(),
 			rankingFirstSeconds,
 			this.#lastDeathState.type,
-			this.#lastDeathState.type == "player" ? this.#lastDeathState.killerName : "",
+			this.#lastDeathState.type == "player" || this.#lastDeathState.type == "enclosed"
+				? this.#lastDeathState.killerName
+				: "",
 		);
 	}
 

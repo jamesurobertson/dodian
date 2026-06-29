@@ -574,14 +574,29 @@ export class WebSocketConnection {
 	}
 
 	/**
+	 * Maps a death type to the integer the client decodes. Shared by GAME_OVER and PLAYER_DIE.
+	 * @param {import("./gameplay/Player.js").DeathType?} deathType
+	 * @returns {number}
+	 */
+	static deathTypeToInt(deathType) {
+		if (deathType == "player") return 1;
+		if (deathType == "arena-bounds") return 2;
+		if (deathType == "self") return 3;
+		if (deathType == "enclosed") return 4;
+		return 0;
+	}
+
+	/**
 	 * @param {number} playerId
 	 * @param {Vec2?} position The position where the player died. This is only useful when the player
 	 * died while hitting a wall or their own trail. In that case we want to make it clearly visible that this is
 	 * what caused the player to die. But when the player is killed by another player, the position
 	 * doesn't really matter and we'd rather let the client determine where to render the player's death.
+	 * @param {number} [deathTypeInt] The death-type code (see deathTypeToInt), appended as a trailing
+	 * byte so the dying client can show the right "game over" screen (e.g. "your island was captured").
 	 */
-	static createPlayerDieMessage(playerId, position) {
-		const bufferLength = position ? 7 : 3;
+	static createPlayerDieMessage(playerId, position, deathTypeInt = 0) {
+		const bufferLength = (position ? 7 : 3) + 1;
 		const buffer = new ArrayBuffer(bufferLength);
 		const view = new DataView(buffer);
 		let cursor = 0;
@@ -595,6 +610,8 @@ export class WebSocketConnection {
 			view.setUint16(cursor, position.y, false);
 			cursor += 2;
 		}
+		view.setUint8(cursor, deathTypeInt);
+		cursor++;
 		return buffer;
 	}
 
@@ -697,15 +714,7 @@ export class WebSocketConnection {
 		view.setUint32(cursor, rankingFirstSeconds, false);
 		cursor += 4;
 
-		let deathTypeInt = 0;
-		if (deathType == "player") {
-			deathTypeInt = 1;
-		} else if (deathType == "arena-bounds") {
-			deathTypeInt = 2;
-		} else if (deathType == "self") {
-			deathTypeInt = 3;
-		}
-		view.setUint8(cursor, deathTypeInt);
+		view.setUint8(cursor, WebSocketConnection.deathTypeToInt(deathType));
 		cursor++;
 
 		intView.set(killedByNameBytes, cursor);
