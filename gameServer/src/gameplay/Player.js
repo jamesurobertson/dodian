@@ -600,7 +600,9 @@ export class Player {
 		}
 		if (this.#permanentlyDead) {
 			const dt = performance.now() - this.#permanentlyDieTime;
-			if (dt > 5_000) {
+			// Keep the (dead) connection open a while so the client can keep watching its killer via the
+			// killcam — the killer's state keeps streaming to this still-registered viewer.
+			if (dt > 20_000) {
 				this.connection.close();
 			}
 		}

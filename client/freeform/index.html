@@ -325,6 +325,10 @@
 			outline: 2px solid var(--chalk);
 			outline-offset: 3px;
 		}
+		.cta.ghost {
+			background: transparent;
+			color: var(--signal);
+		}
 		.err {
 			font-family: var(--mono);
 			font-size: 12px;
@@ -372,6 +376,14 @@
 			font-size: clamp(24px, 5vw, 42px);
 			letter-spacing: -0.01em;
 			color: var(--signal);
+		}
+		.killcam .kc-hint {
+			font-family: var(--mono);
+			font-size: 10px;
+			letter-spacing: 0.22em;
+			text-transform: uppercase;
+			color: var(--faint);
+			margin-top: 10px;
 		}
 		.stat-num {
 			font-family: var(--display);
@@ -591,7 +603,10 @@
 					<div class="stat-num" id="deadkills" style="color:var(--chalk)">0</div>
 				</div>
 			</div>
-			<div class="row"><button id="again" class="cta">Play again</button></div>
+			<div class="row">
+				<button id="watch" class="cta ghost hidden">Watch killcam</button>
+				<button id="again" class="cta">Play again</button>
+			</div>
 		</div>
 
 		<script>
@@ -840,8 +855,16 @@
 		setInterval(sendHeading, 50);
 
 		// ------------------------------------------------------------------ socket
+		var connSeq = 0;
 		function connect(name) {
+			// Close any lingering socket (we keep it open after death so the killcam can stay live).
+			if (ws) {
+				try {
+					ws.close();
+				} catch (_e) {}
+			}
 			reset();
+			var myseq = ++connSeq;
 			ws = new WebSocket(WS_URL);
 			ws.binaryType = "arraybuffer";
 			ws.addEventListener("open", function () {
@@ -871,8 +894,9 @@
 				if (e.data instanceof ArrayBuffer) onMessage(new DataView(e.data));
 			});
 			ws.addEventListener("close", function () {
-				// Unexpected disconnect mid-game — show the game-over screen (no killer to follow).
-				if (screenState === "playing") showDeathScreen(0);
+				if (myseq !== connSeq) return; // a socket we already replaced — ignore its close
+				// Disconnect mid-game or while watching the killcam — fall back to the game-over screen.
+				if (screenState === "playing" || screenState === "killcam") showDeathScreen(killcamDeathType);
 			});
 			ws.addEventListener("error", function () {
 				starterr.textContent = "No signal from " + WS_URL;
@@ -884,7 +908,8 @@
 
 		// The instant this client's own player dies. Plays the death cue and hides the HUD, then either
 		// runs a brief killcam following whoever eliminated you (if we can see them) or goes straight to
-		// the game-over screen.
+		// the game-over screen. The socket is left OPEN so the killcam can stay live; it's closed later
+		// when the player starts a new game (connect) or the server drops it.
 		function onSelfDeath(deathType, killerId) {
 			deathFlash();
 			sndDeath();
@@ -898,25 +923,32 @@
 			miniWrap.classList.add("hidden");
 			liveEl.classList.add("hidden");
 			muteEl.classList.add("hidden");
+			killcamId = killerId;
+			killcamDeathType = deathType;
 			// Killcam only for a kill by another player we can actually see (trail-cut or enclosure).
 			var byPlayer = deathType === 1 || deathType === 4;
 			if (byPlayer && killerId && players[killerId] && !players[killerId].dead) {
-				killcamId = killerId;
-				killcamDeathType = deathType;
-				killcamUntil = performance.now() + KILLCAM_MS;
-				killcamEl.innerHTML = "<div class='kc-label'>Eliminated by</div><div class='kc-name'></div>";
-				killcamEl.querySelector(".kc-name").textContent = names[killerId] || "a rival";
-				killcamEl.classList.remove("hidden");
-				screenState = "killcam";
+				startKillcam(true);
 			} else {
 				showDeathScreen(deathType);
 			}
 		}
 
+		// Switches to the killcam view following the killer. auto=true auto-returns to the game-over
+		// screen after KILLCAM_MS; auto=false watches indefinitely (the "Watch killcam" button).
+		function startKillcam(auto) {
+			killcamEl.innerHTML =
+				"<div class='kc-label'>Eliminated by</div><div class='kc-name'></div><div class='kc-hint'>tap to continue</div>";
+			killcamEl.querySelector(".kc-name").textContent = (killcamId && names[killcamId]) || "a rival";
+			killcamEl.classList.remove("hidden");
+			deadEl.classList.add("hidden");
+			killcamUntil = auto ? performance.now() + KILLCAM_MS : Infinity;
+			screenState = "killcam";
+		}
+
 		function showDeathScreen(deathType) {
 			screenState = "dead";
 			killcamEl.classList.add("hidden");
-			killcamId = null;
 			// deathType 4 = "enclosed": someone captured your entire island. Show a distinct screen so
 			// it's clearly a real elimination, not a glitch.
 			var enclosed = deathType === 4;
@@ -931,12 +963,10 @@
 			}
 			document.getElementById("deadscore").textContent = myScore;
 			document.getElementById("deadkills").textContent = myKills;
+			// Offer to keep watching the killer while we still have a live connection and know who they are.
+			var canWatch = killcamId !== null && players[killcamId] && ws && ws.readyState === 1;
+			document.getElementById("watch").classList.toggle("hidden", !canWatch);
 			deadEl.classList.remove("hidden");
-			if (ws) {
-				try {
-					ws.close();
-				} catch (_e) {}
-			}
 		}
 
 		function onMessage(view) {
@@ -1185,8 +1215,9 @@
 				}
 			}
 
-			// Steering aid. On touch, the floating joystick; on mouse, a themed reticle at the cursor
-			// plus a faint line from the player (the OS cursor is hidden over the canvas).
+			// Steering aid — only while actively playing, so it's gone during the killcam. On touch,
+			// the floating joystick; on mouse, a themed reticle at the cursor plus a line from the player.
+			if (screenState === "playing") {
 			if (inputMode === "touch") {
 				if (joy.active) drawJoystick();
 			} else {
@@ -1218,6 +1249,7 @@
 			ctx.beginPath();
 			ctx.arc(mouseX, mouseY, 1.6, 0, TAU);
 			ctx.fill();
+			}
 			}
 
 			var coords = me && me.pos ? ("X " + me.pos.x.toFixed(0) + " · Y " + me.pos.y.toFixed(0)) : "—";
@@ -1358,6 +1390,10 @@
 		document.getElementById("again").addEventListener("click", function () {
 			audioInit();
 			connect(nameEl.value.trim());
+		});
+		document.getElementById("watch").addEventListener("click", function () {
+			// Resume watching the killer from the game-over screen (indefinitely; tap to return).
+			if (killcamId !== null && players[killcamId]) startKillcam(false);
 		});
 		// Remember the player's call sign between visits (localStorage may be unavailable in private mode).
 		var CALLSIGN_KEY = "dodian.callsign";
