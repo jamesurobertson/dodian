@@ -594,9 +594,11 @@ export class WebSocketConnection {
 	 * doesn't really matter and we'd rather let the client determine where to render the player's death.
 	 * @param {number} [deathTypeInt] The death-type code (see deathTypeToInt), appended as a trailing
 	 * byte so the dying client can show the right "game over" screen (e.g. "your island was captured").
+	 * @param {number} [killerId] The id of the player who killed this one, appended as a trailing u16
+	 * so the dying client can switch the camera to (and name) its killer.
 	 */
-	static createPlayerDieMessage(playerId, position, deathTypeInt = 0) {
-		const bufferLength = (position ? 7 : 3) + 1;
+	static createPlayerDieMessage(playerId, position, deathTypeInt = 0, killerId = 0) {
+		const bufferLength = (position ? 7 : 3) + 3;
 		const buffer = new ArrayBuffer(bufferLength);
 		const view = new DataView(buffer);
 		let cursor = 0;
@@ -612,6 +614,8 @@ export class WebSocketConnection {
 		}
 		view.setUint8(cursor, deathTypeInt);
 		cursor++;
+		view.setUint16(cursor, killerId, false);
+		cursor += 2;
 		return buffer;
 	}
 

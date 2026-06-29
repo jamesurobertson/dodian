@@ -552,7 +552,8 @@ export class Game {
 				// We don't want to send the current position of the player either, the client already
 				// keeps track of the location where the player died, and if we do send the position,
 				// it might cause issues later when the death is undone.
-				const samePlayerMessage = WebSocketConnection.createPlayerDieMessage(0, null, deathTypeInt);
+				// The killer id lets this client switch its camera to whoever eliminated it.
+				const samePlayerMessage = WebSocketConnection.createPlayerDieMessage(0, null, deathTypeInt, player.killerId);
 				nearbyPlayer.connection.send(samePlayerMessage);
 			} else {
 				nearbyPlayer.connection.send(message);

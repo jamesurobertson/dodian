@@ -116,6 +116,7 @@ export class Player {
 	 * @property {number} dieTime
 	 * @property {DeathType} type
 	 * @property {string} killerName
+	 * @property {number} killerId The id of the player who killed this one (own id for self/bounds).
 	 */
 
 	/** @type {DeathState?} */
@@ -525,6 +526,11 @@ export class Player {
 		return this.#lastDeathState ? this.#lastDeathState.type : null;
 	}
 
+	/** The id of the player who killed this one (0 if alive / no killer). */
+	get killerId() {
+		return this.#lastDeathState ? this.#lastDeathState.killerId : 0;
+	}
+
 	/**
 	 * Rotates `#heading` towards `#targetHeading` by at most PLAYER_TURN_RATE * dt,
 	 * taking the shortest angular direction. Keeps the result normalised to [0, 2π).
@@ -682,7 +688,7 @@ export class Player {
 	 */
 	#killPlayer(otherPlayer, deathType) {
 		if (otherPlayer.dead) return false;
-		otherPlayer.#die(deathType, this.name);
+		otherPlayer.#die(deathType, this.name, this.id);
 		if (deathType != "arena-bounds") {
 			this.#killCount++;
 			this.#sendMyScore();
@@ -697,13 +703,15 @@ export class Player {
 	 *
 	 * @param {DeathType} deathType
 	 * @param {string} killerName
+	 * @param {number} killerId
 	 */
-	#die(deathType, killerName) {
+	#die(deathType, killerName, killerId) {
 		if (this.#lastDeathState) return;
 		this.#lastDeathState = {
 			dieTime: performance.now(),
 			type: deathType,
 			killerName,
+			killerId,
 		};
 		// Clear the continuous trail so a dead player's trail can no longer cut anyone.
 		this.#freeformTrail = [];

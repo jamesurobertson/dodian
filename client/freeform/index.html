@@ -349,6 +349,30 @@
 			max-width: 34ch;
 			margin: 14px auto 0;
 		}
+		.killcam {
+			position: fixed;
+			top: 58px;
+			left: 50%;
+			transform: translateX(-50%);
+			z-index: 6;
+			text-align: center;
+			pointer-events: none;
+		}
+		.killcam .kc-label {
+			font-family: var(--mono);
+			font-size: 11px;
+			letter-spacing: 0.28em;
+			text-transform: uppercase;
+			color: var(--mist);
+			margin-bottom: 6px;
+		}
+		.killcam .kc-name {
+			font-family: var(--display);
+			font-weight: 700;
+			font-size: clamp(24px, 5vw, 42px);
+			letter-spacing: -0.01em;
+			color: var(--signal);
+		}
 		.stat-num {
 			font-family: var(--display);
 			font-weight: 700;
@@ -552,6 +576,7 @@
 			<div id="starterr" class="err"></div>
 		</div>
 
+		<div id="killcam" class="killcam hidden"></div>
 		<div id="dead" class="overlay hidden">
 			<div class="eyebrow" id="deadeyebrow">Run ended</div>
 			<h1 class="wordmark" id="deadtitle" style="font-size:clamp(40px,8vw,92px)">Eliminated</h1>
@@ -630,6 +655,7 @@
 		var hud = document.getElementById("hud"), lb = document.getElementById("lb");
 		var liveEl = document.getElementById("live"), miniWrap = document.getElementById("mini-wrap");
 		var startEl = document.getElementById("start"), deadEl = document.getElementById("dead");
+		var killcamEl = document.getElementById("killcam");
 		var nameEl = document.getElementById("name"), starterr = document.getElementById("starterr");
 		function resize() {
 			canvas.width = innerWidth;
@@ -668,6 +694,8 @@
 			myKills = 0;
 			joy.active = false;
 			lastSentHeading = null;
+			killcamId = null;
+			if (killcamEl) killcamEl.classList.add("hidden");
 		}
 
 		// ---- audio: subtle Web Audio cues, context created on the first user gesture (Play) ----
@@ -779,6 +807,10 @@
 		}
 		addEventListener("touchend", endTouch, { passive: false });
 		addEventListener("touchcancel", endTouch, { passive: false });
+		// Tap / click anywhere during the killcam to skip straight to the game-over screen.
+		addEventListener("pointerdown", function () {
+			if (screenState === "killcam") showDeathScreen(killcamDeathType);
+		});
 
 		// Heading to steer toward this tick, or null to hold the current heading.
 		function currentHeading() {
@@ -839,17 +871,52 @@
 				if (e.data instanceof ArrayBuffer) onMessage(new DataView(e.data));
 			});
 			ws.addEventListener("close", function () {
-				if (screenState === "playing") die();
+				// Unexpected disconnect mid-game — show the game-over screen (no killer to follow).
+				if (screenState === "playing") showDeathScreen(0);
 			});
 			ws.addEventListener("error", function () {
 				starterr.textContent = "No signal from " + WS_URL;
 			});
 		}
 
-		function die(deathType) {
-			screenState = "dead";
+		var killcamId = null, killcamUntil = 0, killcamDeathType = 0;
+		var KILLCAM_MS = 2600;
+
+		// The instant this client's own player dies. Plays the death cue and hides the HUD, then either
+		// runs a brief killcam following whoever eliminated you (if we can see them) or goes straight to
+		// the game-over screen.
+		function onSelfDeath(deathType, killerId) {
 			deathFlash();
 			sndDeath();
+			var meP = players[0];
+			if (meP) {
+				meP.dead = true;
+				meP.trail = [];
+			}
+			hud.classList.add("hidden");
+			lb.classList.add("hidden");
+			miniWrap.classList.add("hidden");
+			liveEl.classList.add("hidden");
+			muteEl.classList.add("hidden");
+			// Killcam only for a kill by another player we can actually see (trail-cut or enclosure).
+			var byPlayer = deathType === 1 || deathType === 4;
+			if (byPlayer && killerId && players[killerId] && !players[killerId].dead) {
+				killcamId = killerId;
+				killcamDeathType = deathType;
+				killcamUntil = performance.now() + KILLCAM_MS;
+				killcamEl.innerHTML = "<div class='kc-label'>Eliminated by</div><div class='kc-name'></div>";
+				killcamEl.querySelector(".kc-name").textContent = names[killerId] || "a rival";
+				killcamEl.classList.remove("hidden");
+				screenState = "killcam";
+			} else {
+				showDeathScreen(deathType);
+			}
+		}
+
+		function showDeathScreen(deathType) {
+			screenState = "dead";
+			killcamEl.classList.add("hidden");
+			killcamId = null;
 			// deathType 4 = "enclosed": someone captured your entire island. Show a distinct screen so
 			// it's clearly a real elimination, not a glitch.
 			var enclosed = deathType === 4;
@@ -865,11 +932,6 @@
 			document.getElementById("deadscore").textContent = myScore;
 			document.getElementById("deadkills").textContent = myKills;
 			deadEl.classList.remove("hidden");
-			hud.classList.add("hidden");
-			lb.classList.add("hidden");
-			miniWrap.classList.add("hidden");
-			liveEl.classList.add("hidden");
-			muteEl.classList.add("hidden");
 			if (ws) {
 				try {
 					ws.close();
@@ -946,9 +1008,10 @@
 			} else if (type === S.PLAYER_DIE) {
 				var did = view.getUint16(1, false);
 				if (did === 0) {
-					// Own death. The death-type byte is the last byte (self message carries no position).
-					var dt = view.byteLength > 3 ? view.getUint8(view.byteLength - 1) : 0;
-					die(dt);
+					// Own death. Self message layout: [type, id=0, deathTypeByte, killerId(u16)].
+					var dt = view.byteLength >= 4 ? view.getUint8(3) : 0;
+					var kid = view.byteLength >= 6 ? view.getUint16(4, false) : 0;
+					onSelfDeath(dt, kid);
 					return;
 				}
 				if (players[did]) {
@@ -1013,7 +1076,8 @@
 			var visibleTiles = Math.min(32, 22 + Math.sqrt(Math.max(myScore, 36)) * 0.45);
 			targetPx = Math.min(canvas.width, canvas.height) / visibleTiles;
 			TILE_PX += (targetPx - TILE_PX) * 0.05;
-			if (screenState === "playing") draw();
+			if (screenState === "playing" || screenState === "killcam") draw();
+			if (screenState === "killcam" && now > killcamUntil) showDeathScreen(killcamDeathType);
 			requestAnimationFrame(frame);
 		}
 
@@ -1021,7 +1085,12 @@
 			var now = performance.now();
 			ctx.fillStyle = "#0A0E14";
 			ctx.fillRect(0, 0, canvas.width, canvas.height);
-			var me = players[0], camX = me && me.pos ? me.pos.x : mapSize / 2, camY = me && me.pos ? me.pos.y : mapSize / 2;
+			var me = players[0];
+			// During the killcam the camera follows the killer; otherwise it follows your own player.
+			var camP = (screenState === "killcam" && killcamId !== null && players[killcamId] && players[killcamId].pos)
+				? players[killcamId]
+				: me;
+			var camX = camP && camP.pos ? camP.pos.x : mapSize / 2, camY = camP && camP.pos ? camP.pos.y : mapSize / 2;
 			var cx = canvas.width / 2, cy = canvas.height / 2;
 			function sx(t) {
 				return (t - camX) * TILE_PX + cx;
