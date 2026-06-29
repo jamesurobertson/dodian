@@ -45,7 +45,7 @@ sudo apt update && sudo apt install -y caddy
 ```sh
 sudo useradd -r -s /usr/sbin/nologin dodian || true
 sudo mkdir -p /opt/dodian
-sudo git clone <your-repo-url> /opt/dodian      # or scp the project there
+sudo git clone https://github.com/jamesurobertson/dodian.git /opt/dodian   # or scp the project there
 cd /opt/dodian && git checkout freeform-conversion
 sudo chown -R dodian:dodian /opt/dodian
 # warm the deno cache so the first run is fast:

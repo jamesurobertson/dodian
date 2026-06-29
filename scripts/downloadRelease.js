@@ -23,7 +23,7 @@ if (!outPath) throw new Error("No out dir/file was provided");
 const singleFile = parsedFlags.single || parsedFlags.s;
 
 console.log("Getting latest release data from GitHub.");
-const releaseResponse = await fetch("https://api.github.com/repos/jespertheend/dodian/releases/latest");
+const releaseResponse = await fetch("https://api.github.com/repos/jamesurobertson/dodian/releases/latest");
 const release = await releaseResponse.json();
 
 /**

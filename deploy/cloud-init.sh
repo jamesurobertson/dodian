@@ -18,7 +18,7 @@ exec > /var/log/dodian-setup.log 2>&1
 
 # ---- edit these ----
 DOMAIN="dodian.org"
-REPO_URL="REPLACE_WITH_YOUR_REPO_URL"   # e.g. https://github.com/you/dodian.git
+REPO_URL="https://github.com/jamesurobertson/dodian.git"
 BRANCH="freeform-conversion"
 ARENA_SIZE=600
 BOTS=15
