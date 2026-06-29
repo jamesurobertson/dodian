@@ -46,7 +46,7 @@ export const SPAWN_CANDIDATE_COUNT = 24;
 /**
  * How many tiles players move per millisecond. This should be the same value as on the client.
  */
-export const PLAYER_TRAVEL_SPEED = 0.012;
+export const PLAYER_TRAVEL_SPEED = 0.018;
 
 /**
  * Continuous (freeform) movement: the maximum rate at which a player can rotate their
@@ -55,11 +55,11 @@ export const PLAYER_TRAVEL_SPEED = 0.012;
  * game a slither.io-style turn feel and acts as movement anti-cheat (the client can only
  * ever request a heading; the server owns position and how fast the heading may change).
  *
- * 0.010 rad/ms = 10 rad/s, so a full 180° reversal takes ~0.31s. Kept in proportion to
+ * 0.015 rad/ms = 15 rad/s, so a full 180° reversal takes ~0.21s. Kept in proportion to
  * PLAYER_TRAVEL_SPEED so the turn radius (speed / turn-rate) stays constant — the handling
  * feels the same, just faster.
  */
-export const PLAYER_TURN_RATE = 0.010;
+export const PLAYER_TURN_RATE = 0.015;
 
 /**
  * Fixed-point scale used when encoding continuous positions on the wire.
