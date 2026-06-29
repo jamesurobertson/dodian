@@ -79,7 +79,8 @@ export class BotManager {
 
 	#spawn() {
 		const connection = new BotConnection();
-		const name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+		// Tagged so new players can tell bots apart from humans.
+		const name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)] + " (bot)";
 		const skin = { colorId: 1 + Math.floor(Math.random() * FREE_SKIN_COLOR_COUNT), patternId: 0 };
 		const player = this.#game.createPlayer(
 			/** @type {any} */ (connection),
