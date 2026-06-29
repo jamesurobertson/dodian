@@ -91,10 +91,10 @@ if (!Deno.args.includes("--no-init")) {
 						</style>
 					</head>
 					<body>
-						<h1>Local Carve server</h1>
+						<h1>Local Dodian server</h1>
 						<p>Available endpoints:
 							<ul>
-								<li><a href="/client/freeform/">/client/freeform/</a> - The carve client.</li>
+								<li><a href="/client/freeform/">/client/freeform/</a> - The dodian client.</li>
 								<li>/gameserver - The gameserver, <a href="/client/freeform/#ip=ws://localhost:8080/gameserver">click here to connect to it using a client</a></li>
 								<li><a href="/adminpanel/">/adminpanel/</a> - Admin panel for server management.</li>
 								<li>/servermanager/ - Hosts several endpoints for servermanagement.</li>
