@@ -1,6 +1,6 @@
 // @ts-ignore: npm module resolved via the import map; types are not in the generated deno set.
 import polygonClipping from "polygon-clipping";
-import { canonicalize, multiPolygonArea, pointInMultiPolygon, simplifyRing } from "../util/geometry.js";
+import { bbox, canonicalize, multiPolygonArea, pointInMultiPolygon, simplifyRing } from "../util/geometry.js";
 import { TERRITORY_CAPTURE_SIMPLIFY_EPS, TERRITORY_SUBUNIT_SCALE as SUB } from "../config.js";
 
 /**
@@ -77,8 +77,15 @@ export function captureInto(territories, id, trailTiles) {
 	territories.set(id, filled);
 	affected.push({ id, rings: filled, area: territoryAreaTiles(filled) });
 
+	// Broad-phase: only run the (expensive) steal/difference against players whose territory bounding
+	// box actually overlaps the newly captured region. A non-overlapping difference is a guaranteed
+	// no-op, so skipping it is exact — this turns an O(players) clip per capture into O(overlapping),
+	// which is what was making captures lag once several players had large islands.
+	const [fMinX, fMinY, fMaxX, fMaxY] = bbox(filled);
 	for (const [otherId, otherMp] of territories) {
 		if (otherId === id || otherMp.length === 0) continue;
+		const [oMinX, oMinY, oMaxX, oMaxY] = bbox(otherMp);
+		if (oMinX > fMaxX || oMaxX < fMinX || oMinY > fMaxY || oMaxY < fMinY) continue;
 		let diff;
 		try {
 			diff = canonicalize(polygonClipping.difference(otherMp, filled));
