@@ -1,0 +1,22 @@
+# Caddy config for a single-box dodian deploy.
+# Serves the static client and reverse-proxies the WebSocket to the game server,
+# with automatic HTTPS (Let's Encrypt) for the domain.
+#
+# Requirements: DNS A record for dodian.org -> this box's public IP, ports 80 + 443 open.
+# Put this at /etc/caddy/Caddyfile and run: sudo systemctl reload caddy
+
+dodian.org, www.dodian.org {
+	encode gzip
+
+	# WebSocket traffic -> game server (listening on 127.0.0.1:8080).
+	handle /ws* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Everything else -> the static client.
+	handle {
+		root * /opt/dodian/client/freeform
+		try_files {path} /index.html
+		file_server
+	}
+}

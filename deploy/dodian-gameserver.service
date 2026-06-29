@@ -1,0 +1,22 @@
+# systemd unit for the dodian game server.
+# Install: sudo cp deploy/dodian-gameserver.service /etc/systemd/system/
+#          sudo systemctl daemon-reload && sudo systemctl enable --now dodian-gameserver
+# Logs:    journalctl -u dodian-gameserver -f
+#
+# Binds to 127.0.0.1 only — it's reached through Caddy, never exposed directly.
+# Tune -s (arena size) and --bots to taste.
+
+[Unit]
+Description=dodian game server
+After=network.target
+
+[Service]
+Type=simple
+User=dodian
+WorkingDirectory=/opt/dodian
+ExecStart=/usr/local/bin/deno run -A gameServer/src/mainInstance.js -p 8080 --hostname 127.0.0.1 -s 600 --bots 15
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
