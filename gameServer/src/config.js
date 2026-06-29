@@ -114,6 +114,24 @@ export const SPAWN_TERRITORY_HALF_TILES = 3;
 export const TERRITORY_NETWORK_SIMPLIFY_EPS = 160;
 
 /**
+ * Watchdog timeout (ms) for a single territory-worker capture. polygon-clipping can occasionally
+ * enter a pathological, effectively-infinite computation on a degenerate trail loop; because that
+ * spins synchronously inside the worker, neither the result nor a thrown error ever comes back and
+ * the worker pins a CPU core forever. If a capture has made no progress for this long the worker is
+ * presumed wedged: it is terminated, respawned, and re-seeded from the main-thread mirror. Generous
+ * enough that a healthy capture (well under this even on a small box) never trips it.
+ */
+export const TERRITORY_WORKER_CAPTURE_TIMEOUT_MS = 4000;
+
+/**
+ * Douglas-Peucker epsilon (sub-units, ~0.06 tiles) applied to the trail loop BEFORE it is unioned
+ * into territory. A continuous trail emits many near-collinear vertices; collapsing them shrinks the
+ * clipping input (fewer near-degenerate edges, the main trigger for polygon-clipping blowups) with
+ * no visible change to the captured shape. Defense-in-depth alongside the worker watchdog.
+ */
+export const TERRITORY_CAPTURE_SIMPLIFY_EPS = 64;
+
+/**
  * How long (ms) a dead player remains in the "dying" state before being permanently removed.
  * Gives the client a brief death animation window.
  */

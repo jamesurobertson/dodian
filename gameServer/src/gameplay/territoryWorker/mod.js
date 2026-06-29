@@ -33,6 +33,17 @@ const handlers = {
 	},
 
 	/**
+	 * Re-seeds a player's authoritative territory from the main-thread mirror. Used after a wedged
+	 * worker is terminated and respawned: the fresh worker starts empty, so the main thread replays
+	 * every known territory back into it.
+	 * @param {number} id
+	 * @param {number[][][][]} mp Full MultiPolygon (sub-units).
+	 */
+	restoreTerritory(id, mp) {
+		territories.set(id, mp);
+	},
+
+	/**
 	 * @param {number} id
 	 * @param {number[][]} trailTiles Trail path as [x, y] tile pairs.
 	 * @returns {{affected: {id: number, rings: number[][][][], area: number}[]}}

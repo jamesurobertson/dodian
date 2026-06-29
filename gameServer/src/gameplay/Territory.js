@@ -1,6 +1,6 @@
 import { TypedMessenger } from "renda";
 import { bbox, canonicalize, multiPolygonArea, pointInMultiPolygon } from "../util/geometry.js";
-import { TERRITORY_SUBUNIT_SCALE as SUB } from "../config.js";
+import { TERRITORY_SUBUNIT_SCALE as SUB, TERRITORY_WORKER_CAPTURE_TIMEOUT_MS } from "../config.js";
 
 /**
  * @typedef {{id: number, rings: number[][][][], area: number}} AffectedTerritory
@@ -20,6 +20,7 @@ export class Territory {
 	/** @type {Map<number, number[][][][]>} playerId -> MultiPolygon mirror */
 	#mirror = new Map();
 
+	/** @type {Worker} */
 	#worker;
 	/** @type {TypedMessenger<{}, import("./territoryWorker/mod.js").TerritoryWorkerHandlers>} */
 	#messenger;
@@ -27,10 +28,75 @@ export class Territory {
 	/** @type {CaptureResolvedCallback?} */
 	#onResolved = null;
 
+	/**
+	 * Captures awaiting a worker result, keyed by a monotonic token. Tracked so that (a) a result
+	 * arriving from a worker we've since terminated can be ignored, and (b) when the watchdog
+	 * respawns a wedged worker we can release every stuck capturer's in-flight guard.
+	 * @type {Map<number, number>} token -> capturing playerId
+	 */
+	#pendingCaptures = new Map();
+	#nextCaptureToken = 0;
+	/** @type {number} incremented each respawn so stale promises from a dead worker are dropped. */
+	#workerGeneration = 0;
+	/** @type {ReturnType<typeof setTimeout> | null} */
+	#watchdog = null;
+
 	constructor() {
-		this.#worker = new Worker(new URL("./territoryWorker/mod.js", import.meta.url), { type: "module" });
-		this.#messenger = new TypedMessenger();
-		this.#messenger.initializeWorker(this.#worker, {});
+		const { worker, messenger } = this.#createWorker();
+		this.#worker = worker;
+		this.#messenger = messenger;
+	}
+
+	/** Creates a fresh worker + messenger pair. */
+	#createWorker() {
+		const worker = new Worker(new URL("./territoryWorker/mod.js", import.meta.url), { type: "module" });
+		/** @type {TypedMessenger<{}, import("./territoryWorker/mod.js").TerritoryWorkerHandlers>} */
+		const messenger = new TypedMessenger();
+		messenger.initializeWorker(worker, {});
+		return { worker, messenger };
+	}
+
+	/** (Re)arms the watchdog if captures are outstanding, or clears it if none remain. */
+	#refreshWatchdog() {
+		if (this.#watchdog !== null) {
+			clearTimeout(this.#watchdog);
+			this.#watchdog = null;
+		}
+		if (this.#pendingCaptures.size > 0) {
+			this.#watchdog = setTimeout(() => this.#respawnWedgedWorker(), TERRITORY_WORKER_CAPTURE_TIMEOUT_MS);
+		}
+	}
+
+	/**
+	 * Called when a capture has made no progress for the timeout window: the worker is presumed
+	 * stuck in a pathological polygon-clipping op (spinning, so it will never resolve or throw).
+	 * Terminate it, start a fresh worker, replay the mirror into it, and release every capturer
+	 * whose capture we just dropped so their trail lifecycle un-freezes.
+	 */
+	#respawnWedgedWorker() {
+		const dropped = [...this.#pendingCaptures.values()];
+		console.error(
+			`territory worker wedged (no capture result in ${TERRITORY_WORKER_CAPTURE_TIMEOUT_MS}ms); ` +
+				`respawning, dropping ${dropped.length} in-flight capture(s)`,
+		);
+		this.#workerGeneration++;
+		this.#pendingCaptures.clear();
+		this.#watchdog = null;
+		try {
+			this.#worker.terminate();
+		} catch (_e) { /* already gone */ }
+		const { worker, messenger } = this.#createWorker();
+		this.#worker = worker;
+		this.#messenger = messenger;
+		// Re-seed the fresh worker from the authoritative-enough mirror (every completed capture is
+		// reflected there; only the dropped in-flight ones are lost, which is the intended outcome).
+		for (const [id, mp] of this.#mirror) {
+			this.#messenger.send.restoreTerritory(id, mp);
+		}
+		// Un-freeze the stuck capturers; their trail was already consumed, so they simply resume.
+		if (this.#onResolved) {
+			for (const id of dropped) this.#onResolved(id, []);
+		}
 	}
 
 	/**
@@ -80,7 +146,15 @@ export class Territory {
 	 */
 	requestCapture(playerId, trailTiles) {
 		const arr = trailTiles.map((p) => [p.x, p.y]);
+		const token = this.#nextCaptureToken++;
+		const generation = this.#workerGeneration;
+		this.#pendingCaptures.set(token, playerId);
+		this.#refreshWatchdog();
 		this.#messenger.send.capture(playerId, arr).then((result) => {
+			// Ignore results from a worker we've already terminated, or a capture the watchdog dropped.
+			if (generation !== this.#workerGeneration || !this.#pendingCaptures.has(token)) return;
+			this.#pendingCaptures.delete(token);
+			this.#refreshWatchdog();
 			for (const a of result.affected) {
 				if (a.rings && a.rings.length) {
 					this.#mirror.set(a.id, a.rings);
@@ -90,6 +164,9 @@ export class Territory {
 			}
 			if (this.#onResolved) this.#onResolved(playerId, result.affected);
 		}).catch((e) => {
+			if (generation !== this.#workerGeneration || !this.#pendingCaptures.has(token)) return;
+			this.#pendingCaptures.delete(token);
+			this.#refreshWatchdog();
 			console.error("territory capture failed", e);
 			if (this.#onResolved) this.#onResolved(playerId, []);
 		});
