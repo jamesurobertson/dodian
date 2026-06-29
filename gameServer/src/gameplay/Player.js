@@ -691,7 +691,9 @@ export class Player {
 	#killPlayer(otherPlayer, deathType) {
 		if (otherPlayer.dead) return false;
 		otherPlayer.#die(deathType, this.name, this.id);
-		if (deathType != "arena-bounds") {
+		// Only credit a kill for eliminating someone else — running into your own trail or the border
+		// (otherPlayer === this) must not count as a "rival eliminated".
+		if (otherPlayer !== this) {
 			this.#killCount++;
 			this.#sendMyScore();
 		}
