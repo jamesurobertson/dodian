@@ -1128,6 +1128,24 @@
 			function sy(t) {
 				return (t - camY) * TILE_PX + cy;
 			}
+			// Traces a closed ring as a smooth curve into the current path: quadratic segments that pass
+			// through each edge's midpoint using the vertices as control points, so every corner rounds
+			// into a fluid, organic border. Purely visual — the server geometry stays polygonal.
+			function traceSmoothRing(ring) {
+				var n = ring.length;
+				if (n < 3) {
+					ctx.moveTo(sx(ring[0][0]), sy(ring[0][1]));
+					for (var k = 1; k < n; k++) ctx.lineTo(sx(ring[k][0]), sy(ring[k][1]));
+					ctx.closePath();
+					return;
+				}
+				ctx.moveTo(sx((ring[n - 1][0] + ring[0][0]) / 2), sy((ring[n - 1][1] + ring[0][1]) / 2));
+				for (var i = 0; i < n; i++) {
+					var cur = ring[i], nxt = ring[(i + 1) % n];
+					ctx.quadraticCurveTo(sx(cur[0]), sy(cur[1]), sx((cur[0] + nxt[0]) / 2), sy((cur[1] + nxt[1]) / 2));
+				}
+				ctx.closePath();
+			}
 
 			// survey grid: faint minor lines, slightly stronger majors every 5
 			var leftT = camX - cx / TILE_PX, rightT = camX + cx / TILE_PX;
@@ -1162,9 +1180,7 @@
 				for (var rr = 0; rr < trings.length; rr++) {
 					var ring = trings[rr];
 					if (!ring.length) continue;
-					ctx.moveTo(sx(ring[0][0]), sy(ring[0][1]));
-					for (var k = 1; k < ring.length; k++) ctx.lineTo(sx(ring[k][0]), sy(ring[k][1]));
-					ctx.closePath();
+					traceSmoothRing(ring);
 				}
 				var pulse = (id === "0") ? Math.max(0, 1 - (now - captureFlash) / 350) : 0;
 				ctx.fillStyle = col;
