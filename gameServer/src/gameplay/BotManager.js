@@ -48,6 +48,11 @@ export class BotManager {
 		this.#count = count;
 	}
 
+	/** Number of bots currently alive in the game. */
+	get activeCount() {
+		return this.#bots.size;
+	}
+
 	/**
 	 * @param {number} now
 	 */

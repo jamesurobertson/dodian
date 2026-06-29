@@ -14,11 +14,15 @@ export class WebSocketManager {
 
 	#rateLimitManager = new RateLimitManager();
 
+	/** @type {import("./gameplay/Game.js").Game} */
+	#game;
+
 	/**
 	 * @param {import("./Main.js").Main} mainInstance
 	 * @param {import("./gameplay/Game.js").Game} game
 	 */
 	constructor(mainInstance, game) {
+		this.#game = game;
 		this.#hoster = new WebSocketHoster((socket, ip) => {
 			if (!this.#rateLimitManager.actionAllowed(ip)) {
 				socket.close();
@@ -56,8 +60,37 @@ export class WebSocketManager {
 				this.#activeConnections.delete(connection);
 				this.#offsetIpCount(ip, -1);
 			});
+		}, {
+			// Private ops endpoint. The game server binds to 127.0.0.1 and Caddy only proxies /ws*,
+			// so /stats is reachable solely from the box itself (curl localhost:8080/stats) — never
+			// from the public domain.
+			overrideRequestHandler: (request) => {
+				const url = new URL(request.url);
+				if (request.method === "GET" && url.pathname === "/stats") {
+					return Promise.resolve(
+						new Response(JSON.stringify(this.getStats()) + "\n", {
+							headers: { "content-type": "application/json" },
+						}),
+					);
+				}
+				return Promise.resolve(null);
+			},
 		});
-		this.#hoster.handleRequest;
+	}
+
+	/**
+	 * Live server counts. `humans` is the number of open real WebSocket connections — bots never
+	 * open a socket, so they are excluded by construction.
+	 */
+	getStats() {
+		const humans = this.#activeConnections.size;
+		const bots = this.#game.activeBotCount;
+		return {
+			humans,
+			bots,
+			totalPlayers: this.#game.playerCount,
+			uniqueIps: this.#ipCounts.size,
+		};
 	}
 
 	/**

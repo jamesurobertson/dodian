@@ -84,6 +84,16 @@ export class Game {
 		return this.#players.get(id);
 	}
 
+	/** Total players in the game right now (humans + bots). */
+	get playerCount() {
+		return this.#players.size;
+	}
+
+	/** Bots currently alive in the game. */
+	get activeBotCount() {
+		return this.#botManager.activeCount;
+	}
+
 	/** @type {ArrayBuffer[]} */
 	#minimapMessages = [];
 	#updateNextMinimapPartInstance;
