@@ -469,7 +469,23 @@
 				right: 18px;
 			}
 			#lb {
-				display: none;
+				top: 50px;
+				right: 18px;
+				min-width: 0;
+				max-width: 44vw;
+			}
+			#lb .head {
+				font-size: 9px;
+				padding-bottom: 5px;
+				margin-bottom: 5px;
+			}
+			#lb .row {
+				font-size: 11px;
+				line-height: 1.65;
+				gap: 8px;
+			}
+			#lb .row .nm {
+				max-width: 26vw;
 			}
 			#mini-wrap {
 				right: 12px;
@@ -625,6 +641,8 @@
 			minimapGrid = new Uint8Array(80 * 80);
 			captureFlash = 0;
 			myKills = 0;
+			joy.active = false;
+			lastSentHeading = null;
 		}
 
 		// ---- audio: subtle Web Audio cues, context created on the first user gesture (Play) ----
@@ -689,23 +707,70 @@
 		}
 
 		// ------------------------------------------------------------------ input
+		// Two steering schemes, auto-selected by the last input device:
+		//  - mouse: heading points from the player (screen centre) toward the cursor.
+		//  - touch: a FLOATING JOYSTICK. Wherever the finger first lands becomes the joystick base;
+		//    the vector from there to the current finger position sets the heading. Lifting the
+		//    finger stops steering and the player keeps its last heading (slither-style).
 		var mouseX = innerWidth / 2, mouseY = innerHeight / 2;
+		var inputMode = "mouse"; // "mouse" | "touch" — auto-switches on the last input device used
+		try {
+			if (matchMedia("(pointer: coarse)").matches) inputMode = "touch";
+		} catch (_e) { /* matchMedia unavailable */ }
+		var joy = { active: false, ox: 0, oy: 0, x: 0, y: 0 };
+		var JOY_BASE_R = 50; // px — base ring radius / max thumb travel
+		var JOY_DEADZONE = 8; // px — ignore tiny drags so a tap doesn't snap the heading
+
 		addEventListener("mousemove", function (e) {
+			inputMode = "mouse";
 			mouseX = e.clientX;
 			mouseY = e.clientY;
 		});
-		addEventListener("touchmove", function (e) {
-			if (e.touches[0]) {
-				mouseX = e.touches[0].clientX;
-				mouseY = e.touches[0].clientY;
-			}
+		function touchPt(e) {
+			return e.touches[0] || e.changedTouches[0] || null;
+		}
+		addEventListener("touchstart", function (e) {
+			if (screenState !== "playing") return;
+			var t = touchPt(e);
+			if (!t) return;
+			inputMode = "touch";
+			joy.active = true;
+			joy.ox = joy.x = t.clientX;
+			joy.oy = joy.y = t.clientY;
 			e.preventDefault();
 		}, { passive: false });
+		addEventListener("touchmove", function (e) {
+			if (screenState !== "playing") return;
+			var t = touchPt(e);
+			if (!t) return;
+			inputMode = "touch";
+			joy.x = t.clientX;
+			joy.y = t.clientY;
+			e.preventDefault();
+		}, { passive: false });
+		function endTouch(e) {
+			joy.active = false;
+			if (screenState === "playing") e.preventDefault();
+		}
+		addEventListener("touchend", endTouch, { passive: false });
+		addEventListener("touchcancel", endTouch, { passive: false });
+
+		// Heading to steer toward this tick, or null to hold the current heading.
+		function currentHeading() {
+			if (inputMode === "touch") {
+				if (!joy.active) return null;
+				var dx = joy.x - joy.ox, dy = joy.y - joy.oy;
+				if (dx * dx + dy * dy < JOY_DEADZONE * JOY_DEADZONE) return null;
+				return Math.atan2(dy, dx);
+			}
+			return Math.atan2(mouseY - canvas.height / 2, mouseX - canvas.width / 2);
+		}
 
 		var lastSentHeading = null;
 		function sendHeading() {
 			if (!ws || ws.readyState !== 1 || screenState !== "playing") return;
-			var h = Math.atan2(mouseY - canvas.height / 2, mouseX - canvas.width / 2);
+			var h = currentHeading();
+			if (h === null) return;
 			if (lastSentHeading !== null && Math.abs(((h - lastSentHeading + Math.PI) % TAU + TAU) % TAU - Math.PI) < 0.01) {
 				return;
 			}
@@ -1011,8 +1076,11 @@
 				}
 			}
 
-			// custom aim cursor — a themed reticle at the mouse plus a faint line from the player, so
-			// you can always see where you're steering (the OS cursor is hidden over the canvas).
+			// Steering aid. On touch, the floating joystick; on mouse, a themed reticle at the cursor
+			// plus a faint line from the player (the OS cursor is hidden over the canvas).
+			if (inputMode === "touch") {
+				if (joy.active) drawJoystick();
+			} else {
 			ctx.strokeStyle = "rgba(242,180,92,0.16)";
 			ctx.lineWidth = 1.5;
 			ctx.setLineDash([2, 7]);
@@ -1041,12 +1109,45 @@
 			ctx.beginPath();
 			ctx.arc(mouseX, mouseY, 1.6, 0, TAU);
 			ctx.fill();
+			}
 
 			var coords = me && me.pos ? ("X " + me.pos.x.toFixed(0) + " · Y " + me.pos.y.toFixed(0)) : "—";
-			hud.innerHTML = "<div class='lbl'>Territory</div><div class='area'>" + myScore + "</div>" +
+			hud.innerHTML = "<div class='lbl'>dodian.org</div><div class='area'>" + myScore + "</div>" +
 				"<div class='meta'>" + (myRank ? "Rank <b>#" + myRank + "</b> · " : "") + coords + "</div>";
 			drawLeaderboard();
 			drawMinimap();
+		}
+
+		// Floating joystick overlay (touch): a faint base ring at the touch origin and a solid amber
+		// thumb knob at the (clamped) finger position, joined by a direction line. Drawn in screen space.
+		function drawJoystick() {
+			var dx = joy.x - joy.ox, dy = joy.y - joy.oy;
+			var dist = Math.sqrt(dx * dx + dy * dy);
+			var reach = Math.min(dist, JOY_BASE_R);
+			var tx = dist > 0.0001 ? joy.ox + (dx / dist) * reach : joy.ox;
+			var ty = dist > 0.0001 ? joy.oy + (dy / dist) * reach : joy.oy;
+			ctx.fillStyle = "rgba(242,180,92,0.05)";
+			ctx.strokeStyle = "rgba(242,180,92,0.30)";
+			ctx.lineWidth = 2;
+			ctx.beginPath();
+			ctx.arc(joy.ox, joy.oy, JOY_BASE_R, 0, TAU);
+			ctx.fill();
+			ctx.stroke();
+			if (dist > JOY_DEADZONE) {
+				ctx.strokeStyle = "rgba(242,180,92,0.28)";
+				ctx.lineWidth = 1.5;
+				ctx.beginPath();
+				ctx.moveTo(joy.ox, joy.oy);
+				ctx.lineTo(tx, ty);
+				ctx.stroke();
+			}
+			ctx.fillStyle = "rgba(242,180,92,0.92)";
+			ctx.strokeStyle = "rgba(13,17,23,0.55)";
+			ctx.lineWidth = 2;
+			ctx.beginPath();
+			ctx.arc(tx, ty, 20, 0, TAU);
+			ctx.fill();
+			ctx.stroke();
 		}
 
 		// Radar contact: a hollow ring with a glowing tick on the leading edge marking which way the
@@ -1136,7 +1237,9 @@
 		function startGame() {
 			audioInit();
 			starterr.textContent = "";
-			connect(nameEl.value.trim());
+			var n = nameEl.value.trim();
+			saveCallsign(n);
+			connect(n);
 		}
 		document.getElementById("play").addEventListener("click", startGame);
 		nameEl.addEventListener("keydown", function (e) {
@@ -1146,7 +1249,19 @@
 			audioInit();
 			connect(nameEl.value.trim());
 		});
-		nameEl.focus();
+		// Remember the player's call sign between visits (localStorage may be unavailable in private mode).
+		var CALLSIGN_KEY = "dodian.callsign";
+		function saveCallsign(n) {
+			try {
+				if (n) localStorage.setItem(CALLSIGN_KEY, n);
+			} catch (_e) { /* storage blocked */ }
+		}
+		try {
+			var savedCallsign = localStorage.getItem(CALLSIGN_KEY);
+			if (savedCallsign) nameEl.value = savedCallsign;
+		} catch (_e) { /* storage blocked */ }
+
+		if (!nameEl.value) nameEl.focus();
 		requestAnimationFrame(frame);
 		</script>
 	</body>
