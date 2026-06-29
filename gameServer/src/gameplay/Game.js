@@ -88,27 +88,31 @@ export class Game {
 
 	/**
 	 * Nearest point on another player's cuttable trail within `range` tiles of `player`'s head, for
-	 * bot targeting. Skips itself, dead/spectator/spawn-protected players, players with no trail (a
-	 * player inside their own territory can't be cut), and — for positional advantage — any enemy
-	 * whose trail is not longer than `minOwnerTrailLen` (i.e. only hunt enemies more exposed than
-	 * the caller). Returns null if nothing qualifies.
+	 * bot targeting — using only observable positions (no hidden state like the enemy's total trail
+	 * length). Skips itself, dead/spectator/spawn-protected players, and players with no trail. Only
+	 * considers trail points that are CLOSER to `player` than the trail's owner's head is: that's a
+	 * positional advantage (you can reach their trailing line, not their head), so it strikes a line
+	 * that's run past rather than trading head-to-head. Returns null if nothing qualifies.
 	 * @param {import("./Player.js").Player} player
 	 * @param {number} range
-	 * @param {number} minOwnerTrailLen
 	 * @returns {{x: number, y: number} | null}
 	 */
-	findCuttableTrailPointNear(player, range, minOwnerTrailLen) {
+	findCuttableTrailPointNear(player, range) {
 		const pos = player.getPosition();
 		let bestD2 = range * range;
 		/** @type {{x: number, y: number} | null} */
 		let best = null;
 		for (const other of this.#players.values()) {
 			if (other === player || other.dead || other.isSpectator || other.isSpawnProtected) continue;
-			if (other.freeformTrailLength < 2 || other.freeformTrailLength <= minOwnerTrailLen) continue;
+			if (other.freeformTrailLength < 2) continue;
+			const head = other.getPosition();
+			const headDx = head.x - pos.x, headDy = head.y - pos.y;
+			const headD2 = headDx * headDx + headDy * headDy;
 			for (const seg of other.getFreeformTrailSegments()) {
 				const dx = seg.ax - pos.x, dy = seg.ay - pos.y;
 				const d2 = dx * dx + dy * dy;
-				if (d2 < bestD2) {
+				// Closer to us than their head is → safe to cut; otherwise it's a head-to-head risk.
+				if (d2 < bestD2 && d2 < headD2) {
 					bestD2 = d2;
 					best = { x: seg.ax, y: seg.ay };
 				}

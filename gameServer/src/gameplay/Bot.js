@@ -18,9 +18,6 @@ const AVOID_OFFSETS = [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95, 1.35, -1.35, 1.85, 
 const BOT_SIGHT_RANGE = 6;
 const BOT_AGGRO_MAX_TRAIL = 200;
 const BOT_SAFETY_MAX_TRAIL = 280;
-// How much LESS exposed (shorter trail) a bot must be than its quarry before chasing while it's out
-// in the open — the margin that makes the chase a clear positional advantage rather than a trade.
-const BOT_ADVANTAGE_MARGIN = 40;
 
 /**
  * Drives a single AI player. Behaviour: venture out of its own territory on a drifting heading for
@@ -75,12 +72,11 @@ export class Bot {
 
 		const insideOwn = this.#game.territory.isInside(p.id, pos.x, pos.y);
 		const trailLen = p.freeformTrailLength;
-		// Aggressive only when we can afford it: safe inside our own land, or not yet over-extended.
+		// Aggressive only when we can afford it: safe inside our own land, or not yet over-extended
+		// (judged from our OWN trail length — our own state, which we may fairly use). Whether we have
+		// a positional advantage on the target is decided from positions alone inside the search.
 		const canHunt = insideOwn || trailLen < BOT_AGGRO_MAX_TRAIL;
-		// Positional advantage: from safety we'll cut anyone who's out; while out ourselves we only go
-		// after enemies clearly more exposed than us (longer trail), so we're the one who lands the cut.
-		const minEnemyTrail = insideOwn ? 1 : trailLen + BOT_ADVANTAGE_MARGIN;
-		const enemy = canHunt ? this.#game.findCuttableTrailPointNear(p, BOT_SIGHT_RANGE, minEnemyTrail) : null;
+		const enemy = canHunt ? this.#game.findCuttableTrailPointNear(p, BOT_SIGHT_RANGE) : null;
 
 		let target;
 		if (pos.x < margin || pos.x > w - margin || pos.y < margin || pos.y > h - margin) {
