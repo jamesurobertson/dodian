@@ -46,7 +46,7 @@ sudo apt update && sudo apt install -y caddy
 sudo useradd -r -s /usr/sbin/nologin dodian || true
 sudo mkdir -p /opt/dodian
 sudo git clone https://github.com/jamesurobertson/dodian.git /opt/dodian   # or scp the project there
-cd /opt/dodian && git checkout freeform-conversion
+cd /opt/dodian && git checkout main
 sudo chown -R dodian:dodian /opt/dodian
 # warm the deno cache so the first run is fast:
 sudo -u dodian deno cache gameServer/src/mainInstance.js

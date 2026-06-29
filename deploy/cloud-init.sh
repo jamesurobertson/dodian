@@ -19,7 +19,7 @@ exec > /var/log/dodian-setup.log 2>&1
 # ---- edit these ----
 DOMAIN="dodian.org"
 REPO_URL="https://github.com/jamesurobertson/dodian.git"
-BRANCH="freeform-conversion"
+BRANCH="main"
 ARENA_SIZE=600
 BOTS=15
 # --------------------
