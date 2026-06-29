@@ -6,7 +6,7 @@ Deno.chdir("..");
 
 await buildExecutable({
 	outputDir: resolve("gameServer/out"),
-	outputFileName: "splixGameServer",
+	outputFileName: "dodianGameServer",
 	entryPoint: resolve("gameServer/src/mainInstance.js"),
 	permissionFlags: [
 		"--allow-net",

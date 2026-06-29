@@ -1,51 +1,51 @@
-# Splix
+# Dodian
 
-This monorepo contains the Splix client code, server code, as well as code related to server management.
+A freeform, real-time territory-capture **.io** game: glide with your mouse, loop out
+of your land and back to claim the area you enclose, and cut other players' trails
+(while staying safe inside your own territory). This monorepo contains the game
+client, the Deno game server, and server-management code.
 
-# Running locally
+The playable client is a single self-contained file at `client/freeform/index.html`.
+The game server is a Deno WebSocket server in `gameServer/`.
 
-1. To download the executable, head over to [releases](https://github.com/jespertheend/splix/releases)
-   and download the latest release for your platform.
-2. Unarchive the .tar file.
-3. You can run `splixGameServer --help` from the command line for an overview of arguments,
-   but depending on your platform, you might be able to double click the downloaded file to start the server as well.
+## Run locally
 
-If everything went as expected, you should see `Listening on: ws://localhost:8080`.
-You can now connect to the server by visiting https://splix.io/#ip=ws://localhost:8080
+1. Install [Deno](https://docs.deno.com/runtime/getting_started/installation/) 2.4.1
+   (`deno upgrade --version=2.4.1`, or use [dvm](https://github.com/justjavac/dvm) +
+   `dvm use`, which reads [.dvmrc](./.dvmrc)).
+2. Clone this repository.
+3. Start a game server:
+   ```
+   deno run -A gameServer/src/mainInstance.js -p 9999 -s 200 --bots 12
+   ```
+4. Serve the client with any static server:
+   ```
+   (cd client/freeform && python3 -m http.server 8080)
+   ```
+5. Open <http://localhost:8080>. To play from another device on your LAN, open
+   `http://<your-ip>:8080` there (start the game server with `--hostname 0.0.0.0`).
 
-# Hosting your own public server
+Run `deno run -A gameServer/src/mainInstance.js --help` for server options
+(`-p` port, `-s` arena size, `--bots`, `--hostname`, `-g` gamemode).
 
-Hosting your own server is beyond the scope of this documentation.
-There are many different cloud providers, each with their own pros and cons.
-The official splix server is hosted on a [DigitalOcean droplet](https://m.do.co/c/33084d0cc2b8).
-It uses a nginx proxy in combination with certificates from Let's Encrypt.
+## Deploy
 
-As an example, adding the following to your `server` block in your nginx configuration
-will forward requests to yourdomain.com/ws to the splix gameserver.
+See **[deploy/DEPLOY.md](./deploy/DEPLOY.md)** for a one-box production setup: Caddy
+with automatic HTTPS serving the client and proxying the WebSocket, the game server
+as a systemd service, and a DigitalOcean first-boot startup script
+(`deploy/cloud-init.sh`). It also covers scaling to multiple arenas.
+
+## Build a standalone server executable
 
 ```
-location ~* /(ws)$ {
-	proxy_set_header Host $host;
-	proxy_set_header X-Real-IP $remote_addr;
-	proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-	proxy_set_header X-Forwarded-Proto $scheme;
-	proxy_http_version 1.1;
-	proxy_set_header Upgrade $http_upgrade;
-	proxy_set_header Connection "Upgrade";
-
-	proxy_pass http://localhost:8080;
-	proxy_read_timeout 90;
-}
+deno task build-gameserver
 ```
+produces `dodianGameServer` in `gameServer/out/`; the included `Dockerfile` builds
+and runs it.
 
-# Running in a development environment
+## Type-check / tests
 
-If you want to make changes to the code, you can run the server in a development environment.
-
-1. Install Deno 2.4.1
-   - Either [install Deno normally](https://docs.deno.com/runtime/getting_started/installation/) and run `deno upgrade --version=2.4.1`
-   - Or [install Deno Version Manager](https://github.com/justjavac/dvm?tab=readme-ov-file#installation) and run `dvm use` after cloning. Deno Version Manager will then use the [.dvmrc](./.dvmrc) file of this repository to determine which version to use.
-2. [Clone this repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository)
-3. `cd` into the cloned repository and run `deno task dev`
-
-This will start a local server, with several endpoints. Visit https://localhost:8080 for a list of endpoints.
+```
+deno task check                 # type-check
+deno test -A gameServer/tests/  # unit tests (geometry, territory, collision)
+```

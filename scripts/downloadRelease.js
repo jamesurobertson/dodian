@@ -23,7 +23,7 @@ if (!outPath) throw new Error("No out dir/file was provided");
 const singleFile = parsedFlags.single || parsedFlags.s;
 
 console.log("Getting latest release data from GitHub.");
-const releaseResponse = await fetch("https://api.github.com/repos/jespertheend/splix/releases/latest");
+const releaseResponse = await fetch("https://api.github.com/repos/jespertheend/dodian/releases/latest");
 const release = await releaseResponse.json();
 
 /**
@@ -66,7 +66,7 @@ async function tryRemoveRecursive(dir) {
 	}
 }
 
-const tempDir = await Deno.makeTempDir({ prefix: "splixrelease" });
+const tempDir = await Deno.makeTempDir({ prefix: "dodianrelease" });
 console.log("Writing to temp dir: " + tempDir);
 try {
 	let entryCount = 0;

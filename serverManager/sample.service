@@ -1,5 +1,5 @@
 [Unit]
-Description=Splix server manager
+Description=Dodian server manager
 After=network.target
 
 [Service]

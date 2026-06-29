@@ -61,11 +61,11 @@ export class LegacyServerManager {
 					"ducklings",
 				],
 				doBanner: true,
-				promoBannerUrl: "https://splix.io/banners/ducklings/index.html",
+				promoBannerUrl: "https://dodian.org/banners/ducklings/index.html",
 			},
 			locations: [
 				{
-					pingIpv4: "splix.io",
+					pingIpv4: "dodian.org",
 					loc: "nyc",
 					gamemodes: [
 						{
@@ -87,7 +87,7 @@ export class LegacyServerManager {
 						},
 					],
 					locId: 3,
-					pingIpv6: "splix.io",
+					pingIpv6: "dodian.org",
 				},
 			],
 			"requiredMobileVersion": 11,
