@@ -480,12 +480,17 @@
 				margin-bottom: 5px;
 			}
 			#lb .row {
+				flex-direction: row;
+				align-items: baseline;
 				font-size: 11px;
-				line-height: 1.65;
+				line-height: 1.7;
 				gap: 8px;
 			}
+			#lb .row .rk {
+				width: 14px;
+			}
 			#lb .row .nm {
-				max-width: 26vw;
+				max-width: 22vw;
 			}
 			#mini-wrap {
 				right: 12px;
@@ -614,6 +619,11 @@
 		function resize() {
 			canvas.width = innerWidth;
 			canvas.height = innerHeight;
+			// Pin the displayed size to the backing size. The CSS uses 100vw/100vh, but on mobile
+			// 100vh != innerHeight (the address bar), which would stretch the canvas and make touch
+			// coordinates land off-target (the joystick would anchor away from the finger).
+			canvas.style.width = innerWidth + "px";
+			canvas.style.height = innerHeight + "px";
 		}
 		addEventListener("resize", resize);
 		resize();
@@ -1195,8 +1205,9 @@
 				return;
 			}
 			var myName = nameEl.value.trim();
+			var maxRows = innerWidth <= 640 ? 5 : 8; // keep the panel small on phones
 			var html = "<div class='head'>Standings</div>";
-			for (var i = 0; i < Math.min(8, leaderboard.length); i++) {
+			for (var i = 0; i < Math.min(maxRows, leaderboard.length); i++) {
 				var e = leaderboard[i];
 				var me = myName && e.name === myName ? " me" : "";
 				html += "<div class='row" + me + "'><span class='rk'>" + (i + 1) + "</span>" +
