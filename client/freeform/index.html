@@ -1128,9 +1128,12 @@
 			function sy(t) {
 				return (t - camY) * TILE_PX + cy;
 			}
-			// Traces a closed ring as a smooth curve into the current path: quadratic segments that pass
-			// through each edge's midpoint using the vertices as control points, so every corner rounds
-			// into a fluid, organic border. Purely visual — the server geometry stays polygonal.
+			// Traces a closed ring into the current path with rounded corners: each edge stays straight
+			// and exactly on the polygon, and only the corners are filleted with a small radius. This
+			// keeps shared edges between neighbouring territories aligned (so capturing land doesn't warp
+			// the layout) while still reading as a fluid border. Purely visual — server geometry stays
+			// polygonal.
+			var CORNER_RADIUS = 0.6; // tiles
 			function traceSmoothRing(ring) {
 				var n = ring.length;
 				if (n < 3) {
@@ -1139,10 +1142,22 @@
 					ctx.closePath();
 					return;
 				}
-				ctx.moveTo(sx((ring[n - 1][0] + ring[0][0]) / 2), sy((ring[n - 1][1] + ring[0][1]) / 2));
 				for (var i = 0; i < n; i++) {
-					var cur = ring[i], nxt = ring[(i + 1) % n];
-					ctx.quadraticCurveTo(sx(cur[0]), sy(cur[1]), sx((cur[0] + nxt[0]) / 2), sy((cur[1] + nxt[1]) / 2));
+					var prev = ring[(i - 1 + n) % n], cur = ring[i], nxt = ring[(i + 1) % n];
+					var p1x = prev[0] - cur[0], p1y = prev[1] - cur[1];
+					var p2x = nxt[0] - cur[0], p2y = nxt[1] - cur[1];
+					var d1 = Math.sqrt(p1x * p1x + p1y * p1y), d2 = Math.sqrt(p2x * p2x + p2y * p2y);
+					if (d1 < 1e-6 || d2 < 1e-6) {
+						if (i === 0) ctx.moveTo(sx(cur[0]), sy(cur[1]));
+						else ctx.lineTo(sx(cur[0]), sy(cur[1]));
+						continue;
+					}
+					var r = Math.min(CORNER_RADIUS, d1 * 0.5, d2 * 0.5);
+					var ex = cur[0] + (p1x / d1) * r, ey = cur[1] + (p1y / d1) * r; // fillet entry (toward prev)
+					var fx = cur[0] + (p2x / d2) * r, fy = cur[1] + (p2y / d2) * r; // fillet exit (toward next)
+					if (i === 0) ctx.moveTo(sx(ex), sy(ey));
+					else ctx.lineTo(sx(ex), sy(ey));
+					ctx.quadraticCurveTo(sx(cur[0]), sy(cur[1]), sx(fx), sy(fy));
 				}
 				ctx.closePath();
 			}
