@@ -10,6 +10,13 @@ const TAU = Math.PI * 2;
 const LOOKAHEAD_TILES = 6;
 const AVOID_OFFSETS = [0, 0.3, -0.3, 0.6, -0.6, 0.95, -0.95, 1.35, -1.35, 1.85, -1.85, 2.4, -2.4];
 
+// Aggression: how far (tiles) a bot will spot an enemy's trail, and the trail-length (≈ how far out
+// it already is) thresholds that gate aggression vs. caution. Below AGGRO it hunts; past SAFETY it
+// always heads home to bank rather than risk getting cut while over-extended.
+const BOT_SIGHT_RANGE = 26;
+const BOT_AGGRO_MAX_TRAIL = 200;
+const BOT_SAFETY_MAX_TRAIL = 280;
+
 /**
  * Drives a single AI player. Behaviour: venture out of its own territory on a drifting heading for
  * a while, then head back home to close the loop and capture the enclosed area — repeat. Steers away
@@ -61,6 +68,12 @@ export class Bot {
 		const h = this.#game.arenaHeight;
 		const margin = 14;
 
+		const insideOwn = this.#game.territory.isInside(p.id, pos.x, pos.y);
+		const trailLen = p.freeformTrailLength;
+		// Aggressive only when we can afford it: safe inside our own land, or not yet over-extended.
+		const canHunt = insideOwn || trailLen < BOT_AGGRO_MAX_TRAIL;
+		const enemy = canHunt ? this.#game.findCuttableTrailPointNear(p, BOT_SIGHT_RANGE) : null;
+
 		let target;
 		if (pos.x < margin || pos.x > w - margin || pos.y < margin || pos.y > h - margin) {
 			// Too close to a wall — steer back towards the centre and start a fresh venture.
@@ -68,9 +81,19 @@ export class Bot {
 			this.#goalHeading = target;
 			this.#mode = "venture";
 			this.#until = now + 1800;
-		} else if (this.#mode === "return") {
-			target = Math.atan2(this.#home.y - pos.y, this.#home.x - pos.x);
-			if (this.#game.territory.isInside(p.id, pos.x, pos.y)) {
+		} else if (enemy !== null) {
+			// Aggressive: chase the enemy line to cut it.
+			target = Math.atan2(enemy.y - pos.y, enemy.x - pos.x);
+			this.#mode = "venture";
+			this.#until = now + 2000; // after the cut (or miss), keep venturing a bit
+		} else if (this.#mode === "return" || trailLen > BOT_SAFETY_MAX_TRAIL) {
+			// Conservative: bank our progress — head back to our island and close the loop.
+			const tb = this.#game.territory.getBoundsTiles(p.id);
+			const hx = tb ? (tb.minX + tb.maxX) / 2 : this.#home.x;
+			const hy = tb ? (tb.minY + tb.maxY) / 2 : this.#home.y;
+			target = Math.atan2(hy - pos.y, hx - pos.x);
+			this.#mode = "return";
+			if (insideOwn) {
 				// Back inside our land: the loop closed and captured — head out again.
 				this.#startVenture(now);
 				target = this.#goalHeading;

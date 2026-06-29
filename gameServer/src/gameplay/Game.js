@@ -86,6 +86,34 @@ export class Game {
 		return this.#players.get(id);
 	}
 
+	/**
+	 * Nearest point on another player's cuttable trail within `range` tiles of `player`'s head, for
+	 * bot targeting. Skips itself, dead/spectator/spawn-protected players, and players with no trail
+	 * (a player inside their own territory can't be cut). Returns null if nothing is in range.
+	 * @param {import("./Player.js").Player} player
+	 * @param {number} range
+	 * @returns {{x: number, y: number} | null}
+	 */
+	findCuttableTrailPointNear(player, range) {
+		const pos = player.getPosition();
+		let bestD2 = range * range;
+		/** @type {{x: number, y: number} | null} */
+		let best = null;
+		for (const other of this.#players.values()) {
+			if (other === player || other.dead || other.isSpectator || other.isSpawnProtected) continue;
+			if (other.freeformTrailLength < 2) continue;
+			for (const seg of other.getFreeformTrailSegments()) {
+				const dx = seg.ax - pos.x, dy = seg.ay - pos.y;
+				const d2 = dx * dx + dy * dy;
+				if (d2 < bestD2) {
+					bestD2 = d2;
+					best = { x: seg.ax, y: seg.ay };
+				}
+			}
+		}
+		return best;
+	}
+
 	/** Total players in the game right now (humans + bots). */
 	get playerCount() {
 		return this.#players.size;
