@@ -131,6 +131,17 @@ export class Game {
 		return this.#botManager.activeCount;
 	}
 
+	/** Real (non-bot, non-spectator) players currently in the arena. */
+	get humanPlayerCount() {
+		let n = 0;
+		for (const player of this.#players.values()) {
+			if (player.isSpectator) continue;
+			if (player.connection && player.connection.isBot) continue;
+			n++;
+		}
+		return n;
+	}
+
 	/** @type {ArrayBuffer[]} */
 	#minimapMessages = [];
 	#updateNextMinimapPartInstance;

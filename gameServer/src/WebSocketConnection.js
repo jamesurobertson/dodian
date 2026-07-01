@@ -52,6 +52,11 @@ export class WebSocketConnection {
 	/** @type {ControlSocketConnection?} */
 	#controlSocket = null;
 
+	/** Real player connection (the counterpart to BotConnection.isBot). */
+	get isBot() {
+		return false;
+	}
+
 	get controlSocket() {
 		return this.#controlSocket;
 	}

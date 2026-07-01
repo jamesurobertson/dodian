@@ -4,6 +4,10 @@
  * and Game call on a connection.
  */
 export class BotConnection {
+	/** Lets the game distinguish bots from real players (see Game.humanPlayerCount). */
+	get isBot() {
+		return true;
+	}
 	get protocolVersion() {
 		return 1;
 	}

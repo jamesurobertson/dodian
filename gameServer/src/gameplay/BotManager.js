@@ -41,7 +41,8 @@ export class BotManager {
 
 	/**
 	 * @param {import("./Game.js").Game} game
-	 * @param {number} count
+	 * @param {number} count Target arena population — bots fill up to this, minus the real players
+	 * currently in the arena (so bots drop off as humans join and refill as they leave).
 	 */
 	constructor(game, count) {
 		this.#game = game;
@@ -67,8 +68,21 @@ export class BotManager {
 			}
 		}
 
+		// `#count` is the target arena population: keep that many players by filling the rest with
+		// bots, so bots quietly make room as real players join and refill when they leave.
+		const target = Math.max(0, this.#count - this.#game.humanPlayerCount);
+
+		// Drop surplus bots when real players fill the arena.
+		if (this.#bots.size > target) {
+			for (const bot of this.#bots) {
+				if (this.#bots.size <= target) break;
+				this.#game.removePlayer(bot.player);
+				this.#bots.delete(bot);
+			}
+		}
+
 		// Top the population back up.
-		while (this.#bots.size < this.#count) {
+		while (this.#bots.size < target) {
 			this.#spawn();
 		}
 
